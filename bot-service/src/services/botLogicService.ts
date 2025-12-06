@@ -49,6 +49,10 @@ export interface ParsedUserMessage {
   // fehlende Infos
   missingVehicleInfo?: string[]; // ["make","model","year","engine"]
   missingPartInfo?: string[]; // ["position","disc_diameter"]
+
+  // Smalltalk
+  smalltalkType?: SmalltalkType | null;
+  smalltalkReply?: string | null;
 }
 
 // Pflichtfelder pro Teilkategorie (Minimalanforderungen für OEM-Ermittlung)
@@ -58,6 +62,8 @@ const partRequiredFields: Record<string, string[]> = {
   brake_pad: ["position"],
   shock_absorber: ["position"],
 };
+
+type SmalltalkType = "greeting" | "thanks" | "bot_question";
 
 // ------------------------------
 // Hilfsfunktionen
@@ -70,6 +76,68 @@ function detectLanguageSelection(text: string): "de" | "en" | null {
   if (["2", "en", "english", "englisch", "eng"].includes(t)) return "en";
 
   return null;
+}
+
+function detectLanguageFromText(text: string): "de" | "en" | null {
+  const t = text?.toLowerCase() ?? "";
+  const germanHints = ["hallo", "moin", "servus", "grüß", "danke", "tschau", "bitte"];
+  const englishHints = ["hello", "hi", "hey", "thanks", "thank you", "cheers"];
+
+  if (germanHints.some((w) => t.includes(w))) return "de";
+  if (englishHints.some((w) => t.includes(w))) return "en";
+  return null;
+}
+
+function detectSmalltalk(text: string): SmalltalkType | null {
+  const t = text?.toLowerCase() ?? "";
+  if (!t) return null;
+  const greetings = ["hallo", "hi", "hello", "hey", "moin", "servus", "guten tag", "good morning", "good evening"];
+  const thanks = ["danke", "vielen dank", "thx", "thanks", "thank you"];
+  const botQuestions = ["bist du ein bot", "are you a bot", "echter mensch", "real person"];
+
+  if (greetings.some((g) => t.includes(g))) return "greeting";
+  if (thanks.some((w) => t.includes(w))) return "thanks";
+  if (botQuestions.some((b) => t.includes(b))) return "bot_question";
+  return null;
+}
+
+function buildSmalltalkReply(kind: SmalltalkType, lang: "de" | "en", stage: string | null): string {
+  const needsVehicleDoc = stage === "awaiting_vehicle_document";
+  const needsVehicleData = stage === "collecting_vehicle_data";
+  const needsPartData = stage === "collecting_part_data";
+
+  if (kind === "thanks") {
+    return lang === "de"
+      ? "Gern geschehen! Sag mir einfach, wenn du noch ein Teil oder mehr Infos brauchst."
+      : "You’re welcome! Let me know if you need a part or any other help.";
+  }
+
+  if (kind === "bot_question") {
+    return lang === "de"
+      ? "Ich bin dein Teile-Assistent und helfe dir, das richtige Ersatzteil zu finden. Schick mir Marke/Modell/Baujahr oder ein Foto vom Fahrzeugschein."
+      : "I’m your parts assistant and can help you find the right part. Send me the car brand/model/year or a photo of the registration document.";
+  }
+
+  // greeting
+  if (needsVehicleDoc) {
+    return lang === "de"
+      ? "Hi! 👋 Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Wenn du keins hast, nenn mir bitte Marke, Modell, Baujahr und falls möglich Motor/HSN/TSN."
+      : "Hi there! 👋 Please send a photo of your vehicle registration first. If you don’t have one, tell me brand, model, year and, if possible, engine/HSN/TSN.";
+  }
+  if (needsVehicleData) {
+    return lang === "de"
+      ? "Hallo! 👋 Welche Fahrzeugdaten hast du für mich? Marke, Modell, Baujahr und Motor helfen mir am meisten."
+      : "Hello! 👋 Which vehicle details do you have for me? Brand, model, year, and engine help the most.";
+  }
+  if (needsPartData) {
+    return lang === "de"
+      ? "Hey! 👋 Um dir das richtige Teil zu finden, sag mir bitte um welches Teil es geht und vorne/hinten, links/rechts."
+      : "Hey! 👋 To find the right part, tell me which part you need and whether it’s front/rear, left/right.";
+  }
+
+  return lang === "de"
+    ? "Hallo! 👋 Wie kann ich dir helfen? Suchst du ein Ersatzteil? Dann schick mir Marke/Modell/Baujahr oder ein Foto vom Fahrzeugschein."
+    : "Hi! 👋 How can I help? Looking for a part? Share the car brand/model/year or send a photo of the registration.";
 }
 
 /**
@@ -230,6 +298,8 @@ Du sollst eine KUNDENNACHRICHT analysieren und folgende Felder extrahieren:
 
 - "missingVehicleInfo": Liste von Strings, welche Fahrzeugdaten fehlen, z.B. ["make","model","year","engine"]
 - "missingPartInfo": Liste von Strings, welche Teilinfos fehlen, z.B. ["position","disc_diameter"]
+- "smalltalkType": "greeting" | "thanks" | "bot_question" | null
+- "smalltalkReply": kurze, freundliche Antwort für Smalltalk (nur setzen, wenn intent="smalltalk")
 
 Wenn du etwas nicht sicher weißt, lass das Feld auf null.
 
@@ -249,7 +319,9 @@ Gib NUR folgendes JSON zurück:
   "position": "...",
   "partDetails": { ... },
   "missingVehicleInfo": [...],
-  "missingPartInfo": [...]
+  "missingPartInfo": [...],
+  "smalltalkType": "...",
+  "smalltalkReply": "..."
 }
 
 KUNDENTEXT:
@@ -338,7 +410,32 @@ export async function handleIncomingBotMessage(
 
     const orderData = order.orderData || {};
     let stage: string | null = orderData.stage || null;
-    let lang: "de" | "en" = (order.language as "de" | "en") || "de";
+    const guessedLang = detectLanguageFromText(text);
+    let lang: "de" | "en" = (order.language as "de" | "en") || guessedLang || "de";
+
+    const smalltalkType = detectSmalltalk(text);
+
+    if (smalltalkType && !order.language) {
+      await updateOrderData(order.id, {
+        stage: "awaiting_language"
+      });
+
+      const reply =
+        "Hallo! 👋 / Hi there! 👋\n" +
+        "Bitte wähle deine Sprache:\n" +
+        "1️⃣ Deutsch\n" +
+        "2️⃣ English\n\n" +
+        "Please choose your language:\n" +
+        "1️⃣ German\n" +
+        "2️⃣ English";
+
+      return { reply, orderId: order.id };
+    }
+
+    if (smalltalkType && lang) {
+      const reply = buildSmalltalkReply(smalltalkType, lang, stage);
+      return { reply, orderId: order.id };
+    }
 
     // ---------------------------
     // 2a. Sprache wählen
@@ -451,6 +548,11 @@ export async function handleIncomingBotMessage(
     // 3. Nachricht parsen (NLU)
     // ---------------------------
     const parsed = await parseUserMessage(text);
+
+    if (parsed.intent === "smalltalk") {
+      const reply = parsed.smalltalkReply || buildSmalltalkReply(parsed.smalltalkType ?? "greeting", lang, stage);
+      return { reply, orderId: order.id };
+    }
 
     // 4. Fahrzeugdaten aus Text speichern/aktualisieren (auch fallback)
     await upsertVehicleForOrderFromPartial(order.id, {
