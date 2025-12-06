@@ -1,27 +1,48 @@
-/* Einfache Logger-Utility, die später z.B. auf ein zentrales Logging-System
- * (Datadog, Loki, CloudWatch etc.) umgestellt werden kann.
- */
-
 type LogLevel = "debug" | "info" | "warn" | "error";
 
-function log(level: LogLevel, message: string, meta?: any) {
-  const base = {
+type Meta = Record<string, unknown> | Error | undefined;
+
+/**
+ * Structured logger with component tagging.
+ *
+ * Usage:
+ *   logger.info({ component: "DashboardAPI", orderId }, "Fetched order");
+ *   logger.error({ component: "Webhook", error }, "Failed to handle message");
+ */
+function log(level: LogLevel, metaOrMessage: Meta | string, maybeMessage?: string, maybeMeta?: Meta) {
+  const message = typeof metaOrMessage === "string" ? metaOrMessage : maybeMessage ?? "";
+  const meta = typeof metaOrMessage === "string" ? maybeMeta : metaOrMessage;
+
+  const payload = {
     level,
+    timestamp: new Date().toISOString(),
     message,
-    timestamp: new Date().toISOString()
+    ...(meta ? { meta: serializeMeta(meta) } : {})
   };
 
-  if (meta) {
-    // Meta kann z.B. Error-Objekt, Order-ID, Payload etc. enthalten
-    console.log(JSON.stringify({ ...base, meta }));
-  } else {
-    console.log(JSON.stringify(base));
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify(payload));
+}
+
+function serializeMeta(meta: Meta) {
+  if (!meta) return undefined;
+  if (meta instanceof Error) {
+    return {
+      name: meta.name,
+      message: meta.message,
+      stack: meta.stack
+    };
   }
+  return meta;
 }
 
 export const logger = {
-  debug: (msg: string, meta?: any) => log("debug", msg, meta),
-  info: (msg: string, meta?: any) => log("info", msg, meta),
-  warn: (msg: string, meta?: any) => log("warn", msg, meta),
-  error: (msg: string, meta?: any) => log("error", msg, meta)
+  debug: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+    log("debug", metaOrMessage, message, meta),
+  info: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+    log("info", metaOrMessage, message, meta),
+  warn: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+    log("warn", metaOrMessage, message, meta),
+  error: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+    log("error", metaOrMessage, message, meta)
 };

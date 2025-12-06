@@ -11,6 +11,7 @@ import oemRouter from "./routes/oem";
 import orderAutoSelectRouter from "./routes/orderAutoSelect";
 import orderAutoOrderRouter from "./routes/orderAutoOrder";
 import whatsappWebhookRouter from "./routes/whatsappWebhook";
+import { registerDashboardRoutes } from "./routes/dashboardRoutes";
 
 const app = express();
 
@@ -54,6 +55,9 @@ app.use("/bot/message", botMessageRouter);
 
 // Twilio WhatsApp Webhook (receives form-encoded payloads)
 app.use("/webhook/whatsapp", whatsappWebhookRouter);
+
+// Dashboard API
+registerDashboardRoutes(app);
 
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte

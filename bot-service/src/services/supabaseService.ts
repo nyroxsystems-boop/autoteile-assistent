@@ -34,6 +34,11 @@ function getClient(): SupabaseClient {
   return supabase;
 }
 
+// Exposes a shared Supabase client instance for other modules (e.g., dashboard routes).
+export function getSupabaseClient(): SupabaseClient {
+  return getClient();
+}
+
 function mapRowToConversationOrder(row: any): Order {
   const orderData = row?.order_data || {};
   const status =
