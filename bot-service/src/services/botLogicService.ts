@@ -1,16 +1,18 @@
 import OpenAI from "openai";
-import type {
-  ResponseOutputMessage,
-  ResponseOutputText
-} from "openai/resources/responses/responses";
-import { generateChatCompletion } from "./openAiService";
-import { BOT_SYSTEM_PROMPT } from "../prompts/botSystemPrompt";
 import {
   insertMessage,
   findOrCreateOrder,
   updateOrder,
-  ConversationStatus
+  updateOrderData,
+  ConversationStatus,
+  upsertVehicleForOrderFromPartial,
+  getVehicleForOrder,
+  updateOrderOEM,
+  listShopOffersByOrderId
 } from "./supabaseService";
+import { determineRequiredFields } from "./oemRequiredFieldsService";
+import { resolveOEM } from "./oemService";
+import { selectBestOffer } from "./orderLogicService";
 import { logger } from "../utils/logger";
 
 // KI-Client für NLU
@@ -57,13 +59,6 @@ const partRequiredFields: Record<string, string[]> = {
 };
 
 type SmalltalkType = "greeting" | "thanks" | "bot_question";
-
-type ConversationData = {
-  conversationStatus: ConversationStatus;
-  vehicleDescription?: string | null;
-  partDescription?: string | null;
-  docMissing?: boolean;
-};
 
 // ------------------------------
 // Hilfsfunktionen
@@ -154,39 +149,6 @@ function detectNoVehicleDocument(text: string): boolean {
     "no registration", "no vehicle document", "lost my papers"
   ];
   return patterns.some(p => t.includes(p));
-}
-
-async function buildLLMReply(
-  state: ConversationStatus,
-  language: "de" | "en" | null,
-  userText: string,
-  context: Partial<ConversationData>
-): Promise<string> {
-  const system = `${BOT_SYSTEM_PROMPT}
-
-Current state: ${state}
-Language: ${language ?? "unknown"}
-Remember: Do not change the flow or add new steps.`;
-
-  const user = [
-    `State: ${state}`,
-    `Language: ${language ?? "unknown"}`,
-    `Vehicle description: ${context.vehicleDescription ?? "n/a"}`,
-    `Part description: ${context.partDescription ?? "n/a"}`,
-    `Doc missing: ${context.docMissing ? "yes" : "no/unknown"}`,
-    `User message: "${userText}"`
-  ].join("\n");
-
-  const reply = await generateChatCompletion({
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ]
-  });
-
-  return reply || (language === "en"
-    ? "I didn't catch that, could you rephrase?"
-    : "Ich habe dich nicht verstanden, kannst du das bitte anders formulieren?");
 }
 
 /**
@@ -366,19 +328,17 @@ ${text}
       throw new Error("OPENAI_API_KEY is not set");
     }
 
-    const completion = await client.responses.create({
+    const completion: any = await client.responses.create({
       model: "gpt-4.1-mini",
       input: prompt,
       text: { format: { type: "json_object" } }
     });
 
-    const message = completion.output.find(
-      (item): item is ResponseOutputMessage => item.type === "message"
-    );
-
-    const textContent = message?.content.find(
-      (part): part is ResponseOutputText => part.type === "output_text"
-    )?.text;
+    const textContent =
+      completion.output?.find((item: any) => item.type === "message")?.content?.find(
+        (part: any) => part.type === "output_text"
+      )?.text ??
+      completion.output?.[0]?.content?.[0]?.text;
 
     if (!textContent) {
       throw new Error("Model returned no text output");
@@ -458,231 +418,333 @@ export async function handleIncomingBotMessage(
   payload: BotMessagePayload
 ): Promise<{ reply: string; orderId: string }> {
   return withConversationLock(payload.from, async () => {
-  const rawText = payload.text || "";
-  const userText = sanitizeText(rawText, 1000); // basic length guard for rate-limiting risk
-  const textLower = userText.toLowerCase();
-  const noDocKeywords = ["kein fahrzeugschein", "nicht dabei", "no registration", "don't have it", "keinen schein", "kein schein"];
-  const userHasNoDoc = noDocKeywords.some((k) => textLower.includes(k));
-  const vehicleLooksProvided = hasVehicleHints(userText);
-  const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
+    const userText = sanitizeText(payload.text || "", 1000);
+    const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
+    const vehicleImageNote =
+      hasVehicleImage && payload.mediaUrls
+        ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
+        : null;
 
-  const vehicleImageNote =
-    hasVehicleImage && payload.mediaUrls
-      ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
-      : null;
+    // Order laden oder erstellen
+    const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
+    let language: "de" | "en" | null =
+      order.language ?? detectLanguageSelection(userText) ?? detectLanguageFromText(userText) ?? null;
+    let nextStatus: ConversationStatus = order.status || "choose_language";
+    let vehicleDescription = order.vehicle_description;
+    let partDescription = order.part_description;
 
-  // Load or create order
-  const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
-  const currentStatus: ConversationStatus = order.status || "choose_language";
-
-  // Language: once set, do not auto-change
-  let language: "de" | "en" | null = order.language ?? null;
-  let nextStatus: ConversationStatus = currentStatus;
-  let vehicleDescription = order.vehicle_description;
-  let partDescription = order.part_description;
-  let replyText = "";
-
-  // Log incoming message best-effort
-  try {
-    await insertMessage({
-      orderId: order.id,
-      direction: "incoming",
-      channel: "whatsapp",
-      fromIdentifier: payload.from,
-      toIdentifier: null,
-      content: userText,
-      rawPayload: { from: payload.from, mediaUrls: payload.mediaUrls || [] }
-    });
-  } catch (err: any) {
-    logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
-  }
-
-  // State machine
-  switch (currentStatus) {
-    case "choose_language": {
-      const chosen = pickLanguageFromChoice(userText);
-      if (chosen) {
-        language = chosen;
-        nextStatus = "ask_vehicle_docs";
-      } else {
-        nextStatus = "choose_language";
-      }
-      if (language === "de") {
-        replyText = "Bitte wähle deine Sprache: Antworte mit 1 für Deutsch oder 2 für English.";
-      } else if (language === "en") {
-        replyText = "Please choose a language: reply with 1 for Deutsch or 2 for English.";
-      } else {
-        replyText =
-          "Hallo! Bitte wähle 1 für Deutsch oder 2 für English.\nHello! Please reply 1 for German or 2 for English.";
-      }
-      break;
-    }
-    case "ask_vehicle_docs": {
-      nextStatus = "wait_vehicle_docs";
-      if (language === "de") {
-        replyText =
-          "Danke! Bitte sende ein Foto deines Fahrzeugscheins (bevorzugt) oder nenne VIN/HSN/TSN oder Marke/Modell/Baujahr.";
-      } else if (language === "en") {
-        replyText =
-          "Thanks! Please send a photo of your vehicle registration (preferred), or share VIN/HSN/TSN or make/model/year.";
-      }
-      break;
-    }
-    case "wait_vehicle_docs": {
-      if (hasVehicleImage) {
-        const note = vehicleImageNote || "";
-        vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
-        nextStatus = "ask_part_info";
-        replyText =
-          language === "de"
-            ? "Fahrzeugschein erhalten. Welches Teil brauchst du? Bitte auch Position (vorne/hinten, links/rechts) und Symptome nennen."
-            : "Got the registration document. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
-      } else if (userHasNoDoc || vehicleLooksProvided) {
-        vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${userText}` : userText;
-        nextStatus = "ask_part_info";
-        replyText =
-          language === "de"
-            ? "Danke für die Fahrzeuginfos. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
-            : "Thanks for the vehicle details. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
-      } else if (!vehicleDescription) {
-        vehicleDescription = userText || vehicleDescription;
-        nextStatus = "ask_part_info";
-        replyText =
-          language === "de"
-            ? "Danke. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
-            : "Thanks. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
-      } else {
-        nextStatus = "ask_part_info";
-        replyText =
-          language === "de"
-            ? "Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
-            : "Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
-      }
-      break;
-    }
-    case "ask_part_info": {
-      nextStatus = "wait_part_info";
-      replyText =
-        language === "de"
-          ? "Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
-          : "Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
-      break;
-    }
-    case "wait_part_info": {
-      partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
-      nextStatus = "processing";
-      replyText =
-        language === "de"
-          ? "Alles klar, ich prüfe jetzt die passenden Teile und melde mich mit einer OEM-Nummer."
-          : "Got it. I’ll check for the matching parts and follow up with the OEM number.";
-      break;
-    }
-    default: {
-      nextStatus = currentStatus; // processing/show_offers/done
-      replyText =
-        language === "en"
-          ? "Your request is being processed. You'll get an update shortly."
-          : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
-    }
-  }
-
-  // Build LLM prompt
-  const systemMessage = `${BOT_SYSTEM_PROMPT}
-
-Current conversation state: ${currentStatus}
-Current language code: ${language ?? "null"}.`;
-
-  const userMessage = `
-Backend perspective:
-- Current state: ${currentStatus}
-- Next state: ${nextStatus}
-- User language: ${language ?? "null"}
-- Vehicle description (so far): ${vehicleDescription ?? "none yet"}
-- Part description (so far): ${partDescription ?? "none yet"}
-- User explicitly has registration document: ${userHasNoDoc ? "NO" : "UNKNOWN"}
-- User text looks like vehicle info (make/model/year): ${vehicleLooksProvided ? "YES" : "NO"}
-- User has sent vehicle document image: ${hasVehicleImage ? "YES" : "NO"}
-- Missing info: ${
-  currentStatus === "wait_vehicle_docs" && !vehicleDescription && !hasVehicleImage
-    ? "vehicle document OR make/model/year"
-    : currentStatus === "wait_part_info" && !partDescription
-    ? "part details (what part, position front/rear left/right, symptoms)"
-    : "n/a"
-}
-
-User message: "${payload.text}"
-Media URLs: ${(payload.mediaUrls ?? []).join(", ")}
-
-Instructions for you:
-- Stay within the current step and the backend's nextState.
-- If vehicle_description is already present, do NOT ask again for the registration document.
-- If userHasNoDoc = NO, focus on make/model/year and other textual identifiers.
-- If hasVehicleImage = YES, assume we have the registration document and proceed to ask about the needed part.
-- Keep responses concise; do not generate overly long messages.
-- If the user sends excessive text, politely ask for key points only; keep the reply short.
-`;
-
-  if (!replyText) {
+    // Nachricht loggen (best effort)
     try {
-      replyText =
-        (await generateChatCompletion({
-          messages: [
-            { role: "system", content: systemMessage },
-            { role: "user", content: userMessage }
-          ]
-        })) || "";
+      await insertMessage({
+        orderId: order.id,
+        direction: "incoming",
+        channel: "whatsapp",
+        fromIdentifier: payload.from,
+        toIdentifier: null,
+        content: userText,
+        rawPayload: { from: payload.from, mediaUrls: payload.mediaUrls || [] }
+      });
     } catch (err: any) {
-      console.error("OpenAI reply failed in handleIncomingBotMessage:", err?.message);
+      logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
     }
-  }
 
-  // Fallbacks if LLM empty
-  if (!replyText) {
-    const lang = language ?? "de";
-    switch (currentStatus) {
-      case "choose_language":
-        replyText =
-          lang === "en"
-            ? "Please choose a language: reply with 1 for Deutsch or 2 for English."
-            : "Bitte wähle eine Sprache: Antworte mit 1 für Deutsch oder 2 für English.";
-        break;
-      case "ask_vehicle_docs":
-      case "wait_vehicle_docs":
-        replyText =
-          lang === "en"
-            ? "Send a photo of your registration if possible, otherwise tell me make/model/year and VIN/HSN/TSN."
-            : "Schick mir ein Foto deines Fahrzeugscheins, oder nenne Marke/Modell/Baujahr und VIN/HSN/TSN.";
-        break;
-      case "ask_part_info":
-        replyText =
-          lang === "en"
-            ? "Which part do you need? Please add front/rear, left/right, and any symptoms."
-            : "Welches Teil brauchst du? Bitte mit vorne/hinten, links/rechts und eventuellen Symptomen.";
-        break;
-      case "wait_part_info":
-      default:
-        replyText =
-          lang === "en"
-            ? "Thanks, I'll check matching parts and get back with options."
-            : "Danke, ich prüfe passende Teile und melde mich mit Angeboten.";
+    // parseUserMessage für Intent/NLU
+    let parsed: ParsedUserMessage = { intent: "unknown" };
+    try {
+      parsed = await parseUserMessage(userText);
+    } catch (err: any) {
+      logger.error("parseUserMessage failed", { error: err?.message });
     }
-  }
 
-  // Persist updated order
-  try {
-    await updateOrder(order.id, {
-      status: nextStatus,
-      language,
-      vehicle_description: vehicleDescription ?? null,
-      part_description: partDescription ?? null
-    });
-  } catch (err: any) {
-    logger.error("Failed to update order in handleIncomingBotMessage", {
-      error: err?.message,
-      orderId: order.id
-    });
-  }
+    // Smalltalk: Antworten, State unverändert
+    if (parsed.intent === "smalltalk") {
+      const lang = language ?? detectLanguageFromText(userText) ?? "de";
 
-  return { reply: replyText, orderId: order.id };
+      if (!language && lang) {
+        language = lang;
+        try {
+          await updateOrder(order.id, { language });
+        } catch (err: any) {
+          logger.error("Failed to persist language on smalltalk", { error: err?.message, orderId: order.id });
+        }
+      }
+
+      let reply =
+        parsed.smalltalkReply ||
+        (lang === "en"
+          ? "Hi! How can I help you with your car parts today?"
+          : "Hi! Wie kann ich dir heute bei Autoteilen helfen?");
+
+      if (nextStatus === "collect_vehicle") {
+        reply += lang === "en"
+          ? " I still need your vehicle details (registration photo or make/model/year)."
+          : " Ich brauche noch deine Fahrzeugdetails (Fahrzeugschein oder Marke/Modell/Baujahr).";
+      } else if (nextStatus === "collect_part") {
+        reply += lang === "en"
+          ? " Tell me which part you need and where (front/rear, left/right)."
+          : " Sag mir bitte, welches Teil du brauchst und wo (vorne/hinten, links/rechts).";
+      }
+
+      return { reply, orderId: order.id };
+    }
+
+    let replyText = "";
+
+    switch (nextStatus) {
+      case "choose_language": {
+        const chosen = pickLanguageFromChoice(userText) ?? detectLanguageFromText(userText);
+        if (chosen) {
+          language = chosen;
+          nextStatus = "collect_vehicle";
+          replyText =
+            language === "en"
+              ? "Thanks! Please send a photo of your registration document or tell me make/model/year (VIN/HSN/TSN if you have it)."
+              : "Danke! Bitte sende ein Foto deines Fahrzeugscheins oder nenne Marke/Modell/Baujahr (VIN/HSN/TSN falls vorhanden).";
+        } else {
+          replyText =
+            "Bitte wähle 1 für Deutsch oder 2 für English.\nPlease choose 1 for German or 2 for English.";
+        }
+        break;
+      }
+
+      case "collect_vehicle": {
+        // Bild zählt als Fahrzeugschein
+        if (hasVehicleImage) {
+          const note = vehicleImageNote || "";
+          vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
+          nextStatus = "collect_part";
+          replyText =
+            language === "en"
+              ? "Got the vehicle document. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
+              : "Fahrzeugschein erhalten. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+          break;
+        }
+
+        // Fahrzeugdaten speichern
+        await upsertVehicleForOrderFromPartial(order.id, {
+          make: parsed.make ?? null,
+          model: parsed.model ?? null,
+          year: parsed.year ?? null,
+          engineCode: parsed.engine ?? null,
+          vin: parsed.vin ?? null,
+          hsn: parsed.hsn ?? null,
+          tsn: parsed.tsn ?? null
+        });
+
+        // Fehlende Felder prüfen
+        const missingVehicleFields = determineRequiredFields({
+          make: parsed.make ?? undefined,
+          model: parsed.model ?? undefined,
+          year: parsed.year ?? undefined,
+          engine: parsed.engine ?? undefined,
+          vin: parsed.vin ?? undefined,
+          hsn: parsed.hsn ?? undefined,
+          tsn: parsed.tsn ?? undefined
+        });
+
+        if (missingVehicleFields.length > 0) {
+          const q = buildVehicleFollowUpQuestion(missingVehicleFields, language ?? "de");
+          replyText = q || (language === "en" ? "Can you share more vehicle details?" : "Kannst du mir mehr Fahrzeugdaten nennen?");
+          nextStatus = "collect_vehicle";
+        } else {
+          nextStatus = "collect_part";
+          replyText =
+            language === "en"
+              ? "Thanks, I have enough vehicle info. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
+              : "Danke, ich habe genug Fahrzeugdaten. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+        }
+        break;
+      }
+
+      case "collect_part": {
+        // Teileinfos extrahieren
+        const partCategory = parsed.partCategory || null;
+        const position = parsed.position || null;
+        const mergedPartDetails = parsed.partDetails || {};
+        partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
+
+        // in order_data speichern
+        try {
+          await updateOrderData(order.id, {
+            partCategory,
+            partPosition: position,
+            partDetails: mergedPartDetails,
+            partText: partDescription
+          });
+        } catch (err: any) {
+          logger.error("Failed to update order_data with part info", { error: err?.message, orderId: order.id });
+        }
+
+        const suff = hasSufficientPartInfo(
+          { ...parsed, partCategory, position, partDetails: mergedPartDetails },
+          { partCategory, partPosition: position, partDetails: mergedPartDetails }
+        );
+
+        if (!suff.ok) {
+          const q = buildPartFollowUpQuestion(suff.missing, partCategory, language ?? "de");
+          replyText = q || (language === "en" ? "Could you share a bit more about the part?" : "Kannst du mir noch etwas mehr zum Teil sagen?");
+          nextStatus = "collect_part";
+        } else {
+          nextStatus = "oem_lookup";
+          replyText =
+            language === "en"
+              ? "Thanks, I’ll determine the OEM number now and then check offers."
+              : "Danke, ich ermittle jetzt die OEM-Nummer und prüfe Angebote.";
+        }
+        break;
+      }
+
+      case "oem_lookup": {
+        const vehicle = await getVehicleForOrder(order.id);
+        const vehicleForOem = {
+          make: vehicle?.make ?? undefined,
+          model: vehicle?.model ?? undefined,
+          year: vehicle?.year ?? undefined,
+          engine: vehicle?.engineCode ?? undefined,
+          vin: vehicle?.vin ?? undefined,
+          hsn: vehicle?.hsn ?? undefined,
+          tsn: vehicle?.tsn ?? undefined
+        };
+
+        const missingVehicleFields = determineRequiredFields(vehicleForOem);
+        if (missingVehicleFields.length > 0) {
+          const q = buildVehicleFollowUpQuestion(missingVehicleFields, language ?? "de");
+          replyText = q || (language === "en" ? "I need a bit more vehicle info." : "Ich brauche noch ein paar Fahrzeugdaten.");
+          nextStatus = "collect_vehicle";
+          break;
+        }
+
+        // Teiltext auswählen
+        const partText =
+          parsed.part ||
+          (await (async () => {
+            // fallback aus order_data
+            return null;
+          })()) ||
+          partDescription ||
+          "Teil";
+
+        try {
+          const oemResult = await resolveOEM(vehicleForOem, partText);
+          if (oemResult.success && oemResult.oemNumber) {
+            await updateOrderOEM(order.id, {
+              oemStatus: "ok",
+              oemData: { oemNumber: oemResult.oemNumber }
+            });
+            replyText =
+              language === "en"
+                ? `OEM number determined: ${oemResult.oemNumber}. I'll look for offers now.`
+                : `OEM-Nummer ermittelt: ${oemResult.oemNumber}. Ich schaue jetzt nach Angeboten.`;
+            nextStatus = "show_offers";
+          } else {
+            await updateOrderOEM(order.id, {
+              oemStatus: "error",
+              oemError: oemResult.message ?? "OEM konnte nicht ermittelt werden."
+            });
+            replyText =
+              language === "en"
+                ? "I couldn't determine the OEM number yet. Could you share engine code or more vehicle details?"
+                : "Ich konnte die OEM-Nummer noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?";
+            nextStatus = "collect_vehicle";
+          }
+        } catch (err: any) {
+          logger.error("resolveOEM failed", { error: err?.message, orderId: order.id });
+          replyText =
+            language === "en"
+              ? "A technical error occurred during OEM lookup. Please send more vehicle info."
+              : "Bei der OEM-Ermittlung ist ein technischer Fehler aufgetreten. Bitte schick mir noch ein paar Fahrzeugdaten.";
+          nextStatus = "collect_vehicle";
+        }
+        break;
+      }
+
+      case "show_offers": {
+        try {
+          const offers = await listShopOffersByOrderId(order.id);
+          if (!offers || offers.length === 0) {
+            replyText =
+              language === "en"
+                ? "I'm fetching offers for you now. You'll get an update shortly."
+                : "Ich hole gerade Angebote für dich. Du bekommst gleich ein Update.";
+            nextStatus = "show_offers";
+          } else {
+            const best = selectBestOffer(offers);
+            if (best) {
+              replyText =
+                language === "en"
+                  ? `Best offer: ${best.brand ?? "n/a"} at ${best.shopName}, ${best.price} ${best.currency}. Delivery: ${
+                      best.deliveryTimeDays ?? "n/a"
+                    } days.`
+                  : `Bestes Angebot: ${best.brand ?? "k.A."} bei ${best.shopName}, ${best.price} ${best.currency}. Lieferung: ${
+                      best.deliveryTimeDays ?? "k.A."
+                    } Tage.`;
+            } else {
+              replyText =
+                language === "en"
+                  ? "Offers found, but no best offer determined."
+                  : "Angebote gefunden, aber kein bestes Angebot ermittelt.";
+            }
+            // Wir wechseln auf done, damit die Anfrage abgeschlossen ist.
+            nextStatus = "done";
+          }
+        } catch (err: any) {
+          logger.error("Fetching offers failed", { error: err?.message, orderId: order.id });
+          replyText =
+            language === "en"
+              ? "I couldn't retrieve offers right now. I'll update you soon."
+              : "Ich konnte gerade keine Angebote abrufen. Ich melde mich bald erneut.";
+          nextStatus = "show_offers";
+        }
+        break;
+      }
+
+      case "done": {
+        replyText =
+          language === "en"
+            ? "Do you want to start a new request for another vehicle or part?"
+            : "Möchtest du eine neue Anfrage für ein weiteres Fahrzeug oder Teil starten?";
+        nextStatus = "choose_language";
+        language = null;
+        break;
+      }
+
+      default: {
+        replyText =
+          language === "en"
+            ? "I'm working on your request and will update you soon."
+            : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
+      }
+    }
+
+    // Fallback, falls keine Antwort gesetzt wurde
+    if (!replyText) {
+      replyText =
+        (language ?? "de") === "en"
+          ? "I'm working on your request. I'll update you soon."
+          : "Ich arbeite an deiner Anfrage und melde mich gleich.";
+    }
+
+    const vehicleDescToSave = hasVehicleImage
+      ? vehicleDescription
+        ? `${vehicleDescription}\n${vehicleImageNote ?? ""}`
+        : vehicleImageNote ?? ""
+      : vehicleDescription || "";
+
+    // State + Daten speichern
+    try {
+      await updateOrder(order.id, {
+        status: nextStatus,
+        language,
+        vehicle_description: vehicleDescToSave || null,
+        part_description: partDescription ?? null
+      });
+    } catch (err: any) {
+      logger.error("Failed to update order in handleIncomingBotMessage", {
+        error: err?.message,
+        orderId: order.id
+      });
+    }
+
+    return { reply: replyText, orderId: order.id };
   });
 }

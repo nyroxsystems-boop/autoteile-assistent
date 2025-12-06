@@ -4,12 +4,9 @@ import type { Order as LegacyOrder, Message, ShopOffer, Vehicle } from "../types
 
 export type ConversationStatus =
   | "choose_language"
-  | "ask_language"
-  | "ask_vehicle_docs"
-  | "wait_vehicle_docs"
-  | "ask_part_info"
-  | "wait_part_info"
-  | "processing"
+  | "collect_vehicle"
+  | "collect_part"
+  | "oem_lookup"
   | "show_offers"
   | "done";
 

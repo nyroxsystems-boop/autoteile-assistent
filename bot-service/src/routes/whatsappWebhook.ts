@@ -55,7 +55,8 @@ function xmlEscape(str: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+    .replace(/'/g, "&apos;")
+    .replace(/\n/g, "&#10;");
 }
 
 router.post("/", async (req, res) => {
@@ -82,17 +83,21 @@ router.post("/", async (req, res) => {
   // Log incoming Twilio webhook payload
   console.log("[Twilio Webhook] Incoming", { from, text, numMedia, mediaUrls });
 
-  if (mediaUrls.length > 0) {
-    console.log("[Twilio Webhook] Incoming mediaUrls:", mediaUrls);
-  }
-
   let replyText =
     "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
 
   try {
+    const safeText = text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : "");
+    const payload = {
+      from,
+      text: safeText,
+      orderId: null,
+      mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined
+    };
+
     const botPayload = {
       from,
-      text: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
+      text: safeText,
       orderId: null,
       mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined
     };

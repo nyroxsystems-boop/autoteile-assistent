@@ -24,17 +24,18 @@ router.post("/", async (req: Request, res: Response) => {
     }
   }
 
-  const { from, text, orderId } = req.body ?? {};
+  const { from, text, orderId, mediaUrls } = req.body ?? {};
 
   if (!from || !text) {
     return res.status(400).json({ error: "from and text are required" });
   }
 
   try {
-    const result = await handleIncomingBotMessage({
+    const result: { reply: string; orderId: string } = await handleIncomingBotMessage({
       from,
       text,
-      orderId: orderId ?? null
+      orderId: orderId ?? null,
+      mediaUrls: Array.isArray(mediaUrls) ? mediaUrls : undefined
     });
 
     // Antwort als outgoing message speichern
@@ -58,7 +59,7 @@ router.post("/", async (req: Request, res: Response) => {
     console.error("BotFlow Error:", err);
     res.status(500).json({
       error: "BotFlow failed",
-      details: err?.message
+      details: err?.message ?? String(err)
     });
   }
 });
