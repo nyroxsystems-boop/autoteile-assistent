@@ -1,6 +1,28 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { env } from "../config/env";
-import type { Order, Message, ShopOffer, Vehicle } from "../types/models";
+import type { Order as LegacyOrder, Message, ShopOffer, Vehicle } from "../types/models";
+
+export type ConversationStatus =
+  | "choose_language"
+  | "ask_language"
+  | "ask_vehicle_docs"
+  | "wait_vehicle_docs"
+  | "ask_part_info"
+  | "wait_part_info"
+  | "processing"
+  | "show_offers"
+  | "done";
+
+export interface Order {
+  id: string;
+  from: string;
+  status: ConversationStatus;
+  language: "de" | "en" | null;
+  vehicle_description: string | null;
+  part_description: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
 
 let supabase: SupabaseClient | null = null;
 
@@ -13,6 +35,25 @@ function getClient(): SupabaseClient {
     });
   }
   return supabase;
+}
+
+function mapRowToConversationOrder(row: any): Order {
+  const orderData = row?.order_data || {};
+  const status =
+    (orderData.conversationStatus as ConversationStatus) ||
+    (row?.status as ConversationStatus) ||
+    "choose_language";
+
+  return {
+    id: row.id,
+    from: row.customer_contact ?? "",
+    status,
+    language: (row.language as "de" | "en" | null) ?? null,
+    vehicle_description: orderData.vehicleDescription ?? row.vehicle_description ?? null,
+    part_description: orderData.partDescription ?? row.part_description ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
 }
 
 /**
@@ -40,7 +81,7 @@ export async function insertOrder(partial: {
   customerContact?: string | null;
   requestedPartName: string;
   vehicleId?: string | null;
-}): Promise<Order> {
+}): Promise<LegacyOrder> {
   const client = getClient();
 
   const { data, error } = await client
@@ -59,7 +100,7 @@ export async function insertOrder(partial: {
     throw new Error(`Failed to insert order: ${error.message}`);
   }
 
-  const order: Order = {
+  const order: LegacyOrder = {
     id: data.id,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
@@ -80,7 +121,7 @@ export async function insertOrder(partial: {
 /**
  * Holt eine Order per ID aus der Datenbank.
  */
-export async function getOrderById(id: string): Promise<Order | null> {
+export async function getOrderById(id: string): Promise<LegacyOrder | null> {
   const client = getClient();
 
   const { data, error } = await client
@@ -97,7 +138,7 @@ export async function getOrderById(id: string): Promise<Order | null> {
     throw new Error(`Failed to fetch order ${id}: ${error.message}`);
   }
 
-  const order: Order = {
+  const order: LegacyOrder = {
     id: data.id,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
@@ -118,7 +159,7 @@ export async function getOrderById(id: string): Promise<Order | null> {
 /**
  * Listet die letzten Orders.
  */
-export async function listOrders(limit = 50): Promise<Order[]> {
+export async function listOrders(limit = 50): Promise<LegacyOrder[]> {
   const client = getClient();
 
   const { data, error } = await client
@@ -131,7 +172,7 @@ export async function listOrders(limit = 50): Promise<Order[]> {
     throw new Error(`Failed to list orders: ${error.message}`);
   }
 
-  const mapped: Order[] =
+  const mapped: LegacyOrder[] =
     (data ?? []).map((row: any) => ({
       id: row.id,
       createdAt: row.created_at,
@@ -148,6 +189,117 @@ export async function listOrders(limit = 50): Promise<Order[]> {
     })) ?? [];
 
   return mapped;
+}
+
+/**
+ * Finds an existing order or creates a new one for a given sender.
+ */
+export async function findOrCreateOrder(from: string, orderId?: string | null): Promise<Order> {
+  const client = getClient();
+
+  if (orderId) {
+    const { data, error } = await client.from("orders").select("*").eq("id", orderId).single();
+    if (error) {
+      console.error("Failed to fetch order by id", { error: error.message, orderId });
+      throw new Error("Failed to fetch order by id");
+    }
+    if (!data) {
+      throw new Error("Order not found");
+    }
+    return mapRowToConversationOrder(data);
+  }
+
+  const { data, error } = await client
+    .from("orders")
+    .select("*")
+    .eq("customer_contact", from)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error("Failed to search existing order", { error: error.message, from });
+    throw new Error("Failed to search existing order");
+  }
+
+  const existing = data && data[0] ? mapRowToConversationOrder(data[0]) : null;
+  if (existing && existing.status !== "done") {
+    return existing;
+  }
+
+  const payload = {
+    customer_contact: from,
+    requested_part_name: "pending",
+    status: "choose_language",
+    language: null,
+    order_data: {
+      conversationStatus: "choose_language",
+      vehicleDescription: null,
+      partDescription: null
+    }
+  };
+
+  const { data: created, error: createError } = await client.from("orders").insert(payload).select("*").single();
+  if (createError) {
+    console.error("Failed to create order", { error: createError.message, from });
+    throw new Error("Failed to create order");
+  }
+
+  return mapRowToConversationOrder(created);
+}
+
+/**
+ * Updates an order with partial fields (conversation metadata and language).
+ */
+export async function updateOrder(orderId: string, patch: Partial<Order>): Promise<Order> {
+  const client = getClient();
+
+  const { data: existing, error: fetchError } = await client
+    .from("orders")
+    .select("order_data")
+    .eq("id", orderId)
+    .single();
+
+  if (fetchError) {
+    console.error("Failed to fetch order before update", { error: fetchError.message, orderId });
+    throw new Error("Failed to update order");
+  }
+
+  const currentData = (existing?.order_data as Record<string, any>) || {};
+  const orderDataPatch: Record<string, any> = { ...currentData };
+  const updatePayload: Record<string, any> = {};
+
+  if (patch.status !== undefined) {
+    orderDataPatch.conversationStatus = patch.status;
+    updatePayload.status = patch.status;
+  }
+  if (patch.language !== undefined) {
+    updatePayload.language = patch.language;
+  }
+  if (patch.vehicle_description !== undefined) {
+    orderDataPatch.vehicleDescription = patch.vehicle_description;
+  }
+  if (patch.part_description !== undefined) {
+    orderDataPatch.partDescription = patch.part_description;
+  }
+  if (patch.from !== undefined) {
+    updatePayload.customer_contact = patch.from;
+  }
+
+  updatePayload.order_data = orderDataPatch;
+
+  const { data, error } = await client
+    .from("orders")
+    .update(updatePayload)
+    .eq("id", orderId)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("Failed to update order", { error: error.message, orderId });
+    throw new Error("Failed to update order");
+  }
+
+  return mapRowToConversationOrder(data);
 }
 
 /**

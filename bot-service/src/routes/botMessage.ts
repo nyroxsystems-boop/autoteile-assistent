@@ -23,7 +23,11 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await handleIncomingBotMessage(orderId ?? null, from, text);
+    const result = await handleIncomingBotMessage({
+      from,
+      text,
+      orderId: orderId ?? null
+    });
 
     // Antwort als outgoing message speichern
     try {

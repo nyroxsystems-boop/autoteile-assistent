@@ -3,21 +3,14 @@ import type {
   ResponseOutputMessage,
   ResponseOutputText
 } from "openai/resources/responses/responses";
-import type { Order } from "../types/models";
+import { generateChatCompletion } from "./openAiService";
+import { BOT_SYSTEM_PROMPT } from "../prompts/botSystemPrompt";
 import {
   insertMessage,
-  getOrderById,
-  insertOrder,
-  upsertVehicleForOrderFromPartial,
-  getVehicleForOrder,
-  updateOrderStatus,
-  updateOrderData,
-  listShopOffersByOrderId,
-  updateOrderLanguage
+  findOrCreateOrder,
+  updateOrder,
+  ConversationStatus
 } from "./supabaseService";
-import { resolveOEM } from "./oemService";
-import { scrapeOffersForOrder } from "./scrapingService";
-import { determineRequiredFields } from "./oemRequiredFieldsService";
 import { logger } from "../utils/logger";
 
 // KI-Client für NLU
@@ -64,6 +57,13 @@ const partRequiredFields: Record<string, string[]> = {
 };
 
 type SmalltalkType = "greeting" | "thanks" | "bot_question";
+
+type ConversationData = {
+  conversationStatus: ConversationStatus;
+  vehicleDescription?: string | null;
+  partDescription?: string | null;
+  docMissing?: boolean;
+};
 
 // ------------------------------
 // Hilfsfunktionen
@@ -154,6 +154,39 @@ function detectNoVehicleDocument(text: string): boolean {
     "no registration", "no vehicle document", "lost my papers"
   ];
   return patterns.some(p => t.includes(p));
+}
+
+async function buildLLMReply(
+  state: ConversationStatus,
+  language: "de" | "en" | null,
+  userText: string,
+  context: Partial<ConversationData>
+): Promise<string> {
+  const system = `${BOT_SYSTEM_PROMPT}
+
+Current state: ${state}
+Language: ${language ?? "unknown"}
+Remember: Do not change the flow or add new steps.`;
+
+  const user = [
+    `State: ${state}`,
+    `Language: ${language ?? "unknown"}`,
+    `Vehicle description: ${context.vehicleDescription ?? "n/a"}`,
+    `Part description: ${context.partDescription ?? "n/a"}`,
+    `Doc missing: ${context.docMissing ? "yes" : "no/unknown"}`,
+    `User message: "${userText}"`
+  ].join("\n");
+
+  const reply = await generateChatCompletion({
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ]
+  });
+
+  return reply || (language === "en"
+    ? "I didn't catch that, could you rephrase?"
+    : "Ich habe dich nicht verstanden, kannst du das bitte anders formulieren?");
 }
 
 /**
@@ -367,551 +400,175 @@ ${text}
 // ------------------------------
 // Hauptlogik – zustandsbasierter Flow
 // ------------------------------
+export interface BotMessagePayload {
+  from: string;
+  text: string;
+  orderId?: string | null;
+}
+
+function pickLanguage(text: string): "de" | "en" | null {
+  const t = text.toLowerCase();
+  if (t.includes("1") || t.includes("deutsch")) return "de";
+  if (t.includes("2") || t.includes("english")) return "en";
+  return null;
+}
+
+// ------------------------------
+// Hauptlogik – zustandsbasierter Flow
+// ------------------------------
 export async function handleIncomingBotMessage(
-  orderId: string | null,
-  from: string,
-  text: string
+  payload: BotMessagePayload
 ): Promise<{ reply: string; orderId: string }> {
+  const userText = (payload.text || "").trim();
 
-  let order: Order | null = null;
+  // Load or create order
+  const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
+  const language = (order.language as "de" | "en" | null) ?? null;
+  const currentStatus: ConversationStatus = order.status || "choose_language";
 
+  let nextStatus: ConversationStatus = currentStatus;
+  let nextLanguage: "de" | "en" | null = language;
+  let vehicleDescription = order.vehicle_description;
+  let partDescription = order.part_description;
+
+  // Log incoming message best-effort
   try {
-    // 1. Order holen oder neu erstellen
-    if (orderId) {
-      order = await getOrderById(orderId);
-    }
-    if (!order) {
-      order = await insertOrder({
-        customerName: null,
-        customerContact: from,
-        requestedPartName: text,
-        vehicleId: null
-      });
-    }
-
-    // 2. Eingehende Nachricht speichern
-    try {
-      await insertMessage({
-        orderId: order.id,
-        direction: "incoming",
-        channel: "whatsapp",
-        fromIdentifier: from,
-        toIdentifier: null,
-        content: text,
-        rawPayload: { simulated: true }
-      });
-    } catch (dbErr: any) {
-      logger.error("Failed to store incoming bot message", {
-        error: dbErr?.message,
-        orderId: order.id
-      });
-      // Continue flow even if logging fails
-    }
-
-    const orderData = order.orderData || {};
-    let stage: string | null = orderData.stage || null;
-    const guessedLang = detectLanguageFromText(text);
-    let lang: "de" | "en" = (order.language as "de" | "en") || guessedLang || "de";
-
-    const smalltalkType = detectSmalltalk(text);
-
-    if (smalltalkType && !order.language) {
-      await updateOrderData(order.id, {
-        stage: "awaiting_language"
-      });
-
-      const reply =
-        "Hallo! 👋 / Hi there! 👋\n" +
-        "Bitte wähle deine Sprache:\n" +
-        "1️⃣ Deutsch\n" +
-        "2️⃣ English\n\n" +
-        "Please choose your language:\n" +
-        "1️⃣ German\n" +
-        "2️⃣ English";
-
-      return { reply, orderId: order.id };
-    }
-
-    if (smalltalkType && lang) {
-      const reply = buildSmalltalkReply(smalltalkType, lang, stage);
-      return { reply, orderId: order.id };
-    }
-
-    // ---------------------------
-    // 2a. Sprache wählen
-    // ---------------------------
-    if (!order.language) {
-      const selected = detectLanguageSelection(text);
-
-      if (!selected) {
-        // Noch keine Sprache erkannt → Sprachauswahl senden
-        await updateOrderData(order.id, {
-          stage: "awaiting_language"
-        });
-
-        const reply =
-          "Bitte wähle deine Sprache:\n" +
-          "1️⃣ Deutsch\n" +
-          "2️⃣ English\n\n" +
-          "Please choose your language:\n" +
-          "1️⃣ German\n" +
-          "2️⃣ English";
-
-        return { reply, orderId: order.id };
-      }
-
-      // Sprache erkannt → speichern
-      lang = selected;
-      await updateOrderLanguage(order.id, selected);
-      await updateOrderData(order.id, {
-        language: selected,
-        stage: "awaiting_vehicle_document"
-      });
-
-      const replyDe =
-        "Alles klar, wir machen auf Deutsch weiter.\n\n" +
-        "Bitte schick mir jetzt zuerst ein gut lesbares Foto von deinem Fahrzeugschein (Zulassungsbescheinigung Teil 1).\n" +
-        "Wenn möglich, schick zusätzlich ein Foto von dem Teil oder der Stelle am Auto, um die es geht.";
-
-      const replyEn =
-        "Great, we will continue in English.\n\n" +
-        "Please send me a clear photo of your vehicle registration document.\n" +
-        "If possible, also send a photo of the part or the area on the car you need help with.";
-
-      return {
-        reply: selected === "de" ? replyDe : replyEn,
-        orderId: order.id
-      };
-    }
-
-    // Ab hier ist language gesetzt
-    lang = (order.language as "de" | "en") || "de";
-    stage = orderData.stage || "awaiting_vehicle_document";
-
-    // ---------------------------
-    // 2b. Fahrzeugschein-Phase
-    // ---------------------------
-    if (stage === "awaiting_vehicle_document" && !orderData.vehicleDocumentReceived) {
-      // Kunde sagt explizit, dass er keinen Fahrzeugschein hat → Fallback auf Text-Fahrzeugdaten
-      if (detectNoVehicleDocument(text)) {
-        await updateOrderData(order.id, {
-          stage: "collecting_vehicle_data"
-        });
-
-        const replyDe =
-          "Kein Problem 👍\n" +
-          "Dann machen wir es so:\n" +
-          "Schreib mir bitte:\n" +
-          "– Marke (z. B. BMW)\n" +
-          "– Modell (z. B. 320d Touring)\n" +
-          "– Baujahr\n" +
-          "– wenn möglich: Motor / kW oder HSN/TSN.";
-
-        const replyEn =
-          "No problem 👍\n" +
-          "Then let's do it like this:\n" +
-          "Please tell me:\n" +
-          "- Brand (e.g. BMW)\n" +
-          "- Model (e.g. 320d Touring)\n" +
-          "- Year\n" +
-          "- if possible: engine / kW or HSN/TSN.";
-
-        return {
-          reply: lang === "de" ? replyDe : replyEn,
-          orderId: order.id
-        };
-      }
-
-      // Sonst weiter freundlich nach Fahrzeugschein + Bild fragen
-      const reminderDe =
-        "Bitte schick mir zuerst ein Foto von deinem Fahrzeugschein " +
-        "und, wenn möglich, ein Foto von dem Teil oder der Stelle am Auto, um die es geht.";
-
-      const reminderEn =
-        "Please first send a photo of your vehicle registration document " +
-        "and, if possible, a photo of the part or the area on the car you need help with.";
-
-      return {
-        reply: lang === "de" ? reminderDe : reminderEn,
-        orderId: order.id
-      };
-    }
-
-    // Falls extern (Media-Webhook) bereits vehicleDocumentReceived gesetzt hat:
-    if (stage === "awaiting_vehicle_document" && orderData.vehicleDocumentReceived) {
-      // Wir können zur Teilephase wechseln
-      stage = "collecting_part_data";
-      await updateOrderData(order.id, { stage });
-    }
-
-    // ---------------------------
-    // 3. Nachricht parsen (NLU)
-    // ---------------------------
-    const parsed = await parseUserMessage(text);
-
-    if (parsed.intent === "smalltalk") {
-      const reply = parsed.smalltalkReply || buildSmalltalkReply(parsed.smalltalkType ?? "greeting", lang, stage);
-      return { reply, orderId: order.id };
-    }
-
-    // 4. Fahrzeugdaten aus Text speichern/aktualisieren (auch fallback)
-    await upsertVehicleForOrderFromPartial(order.id, {
-      make: parsed.make ?? null,
-      model: parsed.model ?? null,
-      year: parsed.year ?? null,
-      engineCode: parsed.engine ?? null,
-      vin: parsed.vin ?? null,
-      hsn: parsed.hsn ?? null,
-      tsn: parsed.tsn ?? null
+    await insertMessage({
+      orderId: order.id,
+      direction: "incoming",
+      channel: "whatsapp",
+      fromIdentifier: payload.from,
+      toIdentifier: null,
+      content: userText,
+      rawPayload: { from: payload.from }
     });
-
-    const vehicle = await getVehicleForOrder(order.id);
-    const vehicleForOem = {
-      make: vehicle?.make ?? parsed.make ?? undefined,
-      model: vehicle?.model ?? parsed.model ?? undefined,
-      year: vehicle?.year ?? parsed.year ?? undefined,
-      engine: vehicle?.engineCode ?? parsed.engine ?? undefined,
-      vin: vehicle?.vin ?? parsed.vin ?? undefined,
-      hsn: vehicle?.hsn ?? parsed.hsn ?? undefined,
-      tsn: vehicle?.tsn ?? parsed.tsn ?? undefined
-    };
-
-    // ---------------------------
-    // 4a. vehicle-data collecting fallback
-    // ---------------------------
-    if (stage === "collecting_vehicle_data") {
-      const missingVehicleFields = determineRequiredFields(vehicleForOem);
-
-      if (missingVehicleFields.length > 0) {
-        const question = buildVehicleFollowUpQuestion(missingVehicleFields, lang);
-        if (question) {
-          await updateOrderData(order.id, {
-            stage: "collecting_vehicle_data",
-            pendingVehicleFields: missingVehicleFields,
-            lastQuestionKey: missingVehicleFields[0]
-          });
-          return {
-            reply: question,
-            orderId: order.id
-          };
-        }
-      }
-
-      // Fahrzeugdaten jetzt ausreichend → weiter zur Teilephase
-      stage = "collecting_part_data";
-      await updateOrderData(order.id, {
-        stage: "collecting_part_data",
-        pendingVehicleFields: []
-      });
-    }
-
-    // ---------------------------
-    // 4b. Teilephase: collecting_part_data
-    // ---------------------------
-    if (stage === "collecting_part_data") {
-      // Merge Teil-Infos mit evtl. bereits erkanntem Bild-Guesst (imagePartGuess aus order_data)
-      const partCategory =
-        parsed.partCategory ||
-        orderData.partCategory ||
-        orderData.imagePartGuess?.partCategory ||
-        null;
-
-      const position =
-        parsed.position ||
-        orderData.partPosition ||
-        orderData.imagePartGuess?.position ||
-        null;
-
-      const mergedPartDetails = {
-        ...(orderData.partDetails || {}),
-        ...(parsed.partDetails || {})
-      };
-
-      // Prüfen, ob wir genug Teilinfos haben
-      const suff = hasSufficientPartInfo(
-        {
-          ...parsed,
-          partCategory,
-          position,
-          partDetails: mergedPartDetails
-        },
-        orderData
-      );
-
-      if (!suff.ok) {
-        const question = buildPartFollowUpQuestion(suff.missing, partCategory, lang);
-        if (question) {
-          await updateOrderData(order.id, {
-            stage: "collecting_part_data",
-            partCategory,
-            partPosition: position,
-            partDetails: mergedPartDetails,
-            pendingPartFields: suff.missing,
-            lastQuestionKey: suff.missing[0]
-          });
-
-          return {
-            reply: question,
-            orderId: order.id
-          };
-        }
-      }
-
-      // Teilinfos ausreichend → Teilzustand in order_data speichern
-      await updateOrderData(order.id, {
-        stage: "processing",
-        partCategory,
-        partPosition: position,
-        partDetails: mergedPartDetails
-      });
-
-      stage = "processing";
-    }
-
-    // ---------------------------
-    // 5. OEM + Scraping nur wenn wir in "processing" sind
-    // ---------------------------
-    if (stage === "processing") {
-      await updateOrderStatus(order.id, "processing");
-
-      // Sicherheit: Fahrzeugdaten prüfen
-      const missingVehicleFields = determineRequiredFields(vehicleForOem);
-      if (missingVehicleFields.length > 0) {
-        const question = buildVehicleFollowUpQuestion(missingVehicleFields, lang);
-        if (question) {
-          await updateOrderData(order.id, {
-            stage: "collecting_vehicle_data",
-            pendingVehicleFields: missingVehicleFields,
-            lastQuestionKey: missingVehicleFields[0]
-          });
-          return {
-            reply: question,
-            orderId: order.id
-          };
-        }
-      }
-
-      // OEM ermitteln
-      let oem: string | null = null;
-      try {
-        const partDescription = parsed.part || orderData.partCategory || "unbekanntes Teil";
-        const oemResult = await resolveOEM(vehicleForOem, partDescription);
-
-        if (!oemResult.success || !oemResult.oemNumber) {
-          await updateOrderData(order.id, {
-            stage: "oem_failed",
-            oemError: oemResult.message ?? "OEM konnte nicht ermittelt werden."
-          });
-
-          const replyDe =
-            "Ich konnte die OEM-Nummer noch nicht sicher bestimmen. " +
-            "Bitte schick mir, wenn möglich, noch mehr Fahrzeug- oder Teil-Details, " +
-            "oder dein Händler prüft das direkt im System für dich.";
-
-          const replyEn =
-            "I could not reliably determine the OEM number yet. " +
-            "Please send me more details about the vehicle or part, or your dealer will check it directly in the system.";
-
-          return {
-            reply: lang === "de" ? replyDe : replyEn,
-            orderId: order.id
-          };
-        }
-
-        oem = oemResult.oemNumber;
-        await updateOrderData(order.id, {
-          stage: "oem_resolved",
-          oemNumber: oem
-        });
-      } catch (oemError: any) {
-        logger.error("resolveOEM failed", {
-          error: oemError?.message,
-          orderId: order.id,
-          vehicleForOem
-        });
-
-        await updateOrderData(order.id, {
-          stage: "error",
-          errorType: "oem_resolution",
-          errorMessage: oemError?.message ?? "Unknown OEM error"
-        });
-
-        const replyDe =
-          "Beim Abruf der Fahrzeug-/Teiledaten ist ein technischer Fehler aufgetreten. " +
-          "Dein Händler hat deine Anfrage trotzdem im System und kann das Teil manuell für dich prüfen.";
-
-        const replyEn =
-          "A technical error occurred while retrieving the vehicle/part data. " +
-          "Your dealer still has your request in the system and can check the correct part manually.";
-
-        return {
-          reply: lang === "de" ? replyDe : replyEn,
-          orderId: order.id
-        };
-      }
-
-      if (!oem) {
-        const replyDe =
-          "Ich konnte die OEM-Nummer leider nicht bestimmen. Dein Händler hat deine Anfrage im System und meldet sich bei dir.";
-        const replyEn =
-          "I could not determine the OEM number. Your dealer has your request in the system and will contact you.";
-
-        return {
-          reply: lang === "de" ? replyDe : replyEn,
-          orderId: order.id
-        };
-      }
-
-      // Scraping
-      let offers: any[] = [];
-      try {
-        offers = await scrapeOffersForOrder(order.id, oem);
-      } catch (scrapeError: any) {
-        logger.error("scrapeOffersForOrder failed", {
-          error: scrapeError?.message,
-          orderId: order.id,
-          oem
-        });
-
-        await updateOrderData(order.id, {
-          stage: "error",
-          errorType: "scraping",
-          errorMessage: scrapeError?.message ?? "Unknown scraping error",
-          oemNumber: oem
-        });
-
-        await updateOrderStatus(order.id, "ready");
-
-        const replyDe =
-          `Ich habe die OEM-Nummer **${oem}** ermittelt. ` +
-          `Die angebundenen Shops sind gerade technisch nicht erreichbar, ` +
-          `aber dein Händler sieht alle Fahrzeugdaten und die OEM im System und kann das Teil manuell für dich prüfen.`;
-
-        const replyEn =
-          `I have determined the OEM number **${oem}**. ` +
-          `The connected shops are currently not reachable, ` +
-          `but your dealer sees all vehicle data and the OEM in the system and can check the part manually.`;
-
-        return {
-          reply: lang === "de" ? replyDe : replyEn,
-          orderId: order.id
-        };
-      }
-
-      await updateOrderStatus(order.id, "ready");
-
-      if (!offers || offers.length === 0) {
-        const replyDe =
-          `Top, ich habe deine Anfrage aufgenommen und die OEM-Nummer **${oem}** ermittelt.\n\n` +
-          "Aktuell konnte ich in den angebundenen Shops noch keine Angebote finden.\n" +
-          "Dein Händler hat aber alle Fahrzeugdaten und die OEM im System " +
-          "und prüft das passende Teil manuell für dich.\n\n" +
-          "Du wirst von ihm kontaktiert, sobald er alles geprüft hat.";
-
-        const replyEn =
-          `Great, I have received your request and determined the OEM number **${oem}**.\n\n` +
-          "Currently I could not find any offers in the connected shops.\n" +
-          "Your dealer has all vehicle data and the OEM in the system " +
-          "and will manually check the correct part for you.\n\n" +
-          "They will contact you once everything is checked.";
-
-        await updateOrderData(order.id, {
-          stage: "waiting_for_dealer",
-          offersFound: 0,
-          oemNumber: oem
-        });
-
-        return {
-          reply: lang === "de" ? replyDe : replyEn,
-          orderId: order.id
-        };
-      }
-
-      const sorted = [...offers].sort((a, b) => a.price - b.price);
-      const best = sorted[0];
-
-      const replyDe =
-        "Danke dir! Ich habe deine Anfrage aufgenommen und alles für deinen Händler vorbereitet.\n\n" +
-        `✅ OEM-Nummer: **${oem}**\n` +
-        `✅ Anzahl gefundener Angebote: ${offers.length}\n\n` +
-        `Günstigstes Angebot (zur Info):\n` +
-        `🛒 Shop: ${best.shopName}\n` +
-        `💶 Preis: ${best.price} ${best.currency}\n` +
-        `⏱️ Lieferzeit: ${best.deliveryTimeDays ?? "unbekannt"} Tage\n` +
-        `🔧 Marke: ${best.brand ?? "k.A."}\n\n` +
-        "Dein Händler sieht jetzt alle Details im System (Fahrzeugschein-Daten, OEM, Angebote) " +
-        "und meldet sich bei dir, um Preis & Bestellung final mit dir abzustimmen.";
-
-      const replyEn =
-        "Thanks! I have received your request and prepared everything for your dealer.\n\n" +
-        `✅ OEM number: **${oem}**\n` +
-        `✅ Number of offers found: ${offers.length}\n\n` +
-        `Cheapest offer (for info):\n` +
-        `🛒 Shop: ${best.shopName}\n` +
-        `💶 Price: ${best.price} ${best.currency}\n` +
-        `⏱️ Delivery time: ${best.deliveryTimeDays ?? "unknown"} days\n` +
-        `🔧 Brand: ${best.brand ?? "n/a"}\n\n` +
-        "Your dealer now sees all details in the system (vehicle registration data, OEM, offers) " +
-        "and will contact you to finalize price and ordering.";
-
-      await updateOrderData(order.id, {
-        stage: "waiting_for_dealer",
-        offersFound: offers.length,
-        oemNumber: oem,
-        cheapestOffer: {
-          shopName: best.shopName,
-          price: best.price,
-          currency: best.currency,
-          deliveryTimeDays: best.deliveryTimeDays ?? null,
-          brand: best.brand ?? null
-        }
-      });
-
-      return {
-        reply: lang === "de" ? replyDe : replyEn,
-        orderId: order.id
-      };
-    }
-
-    // Wenn wir hier landen und keine spezielle Stage getroffen haben → Fallback
-    const fallbackReplyDe =
-      "Ich habe deine Nachricht gespeichert. Wenn du möchtest, kannst du mir ein Foto deines Fahrzeugscheins und ein Foto von dem Teil schicken, um das es geht. Dann helfe ich dir, das richtige Teil zu finden.";
-    const fallbackReplyEn =
-      "I have saved your message. If you like, you can send me a photo of your vehicle registration document and a photo of the part or area on the car, and I will help you find the correct part.";
-
-    return {
-      reply: lang === "de" ? fallbackReplyDe : fallbackReplyEn,
-      orderId: order.id
-    };
-  } catch (fatalError: any) {
-    logger.error("handleIncomingBotMessage fatal error", {
-      error: fatalError?.message,
-      stack: fatalError?.stack,
-      orderId: order?.id,
-      from,
-      text
-    });
-
-    if (order?.id) {
-      try {
-        await updateOrderData(order.id, {
-          stage: "error",
-          errorType: "fatal",
-          errorMessage: fatalError?.message ?? "Unknown fatal error"
-        });
-        await updateOrderStatus(order.id, "failed");
-      } catch (innerErr: any) {
-        logger.error("Failed to update order status after fatal error", {
-          error: innerErr?.message,
-          orderId: order.id
-        });
-      }
-    }
-
-    return {
-      reply:
-        "Es ist ein technischer Fehler aufgetreten. Deine Anfrage wurde aber gespeichert und dein Händler sieht sie im System. Er meldet sich bei dir, sobald er alles geprüft hat.",
-      orderId: order?.id ?? orderId ?? ""
-    };
+  } catch (err: any) {
+    logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
   }
+
+  // State machine decisions
+  switch (currentStatus) {
+    case "choose_language": {
+      const sel = pickLanguage(userText);
+      if (sel) {
+        nextLanguage = sel;
+        nextStatus = "ask_vehicle_docs";
+      } else {
+        nextStatus = "choose_language";
+      }
+      break;
+    }
+    case "ask_vehicle_docs": {
+      nextStatus = "wait_vehicle_docs";
+      break;
+    }
+    case "wait_vehicle_docs": {
+      vehicleDescription = vehicleDescription
+        ? `${vehicleDescription}\n${userText}`
+        : userText;
+      nextStatus = "ask_part_info";
+      break;
+    }
+    case "ask_part_info": {
+      nextStatus = "wait_part_info";
+      break;
+    }
+    case "wait_part_info": {
+      partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
+      nextStatus = "processing";
+      break;
+    }
+    default: {
+      // processing/show_offers/done
+      nextStatus = currentStatus;
+    }
+  }
+
+  // Build prompt for LLM
+  const systemMessage = `${BOT_SYSTEM_PROMPT}
+Current conversation state: ${currentStatus}
+Current language code: ${nextLanguage ?? language ?? "null"}.`;
+
+  const userMessage = `
+Current state: ${currentStatus}
+Next state the backend wants to move to: ${nextStatus}
+Language code: ${nextLanguage ?? language ?? "null"}
+Known vehicle description: ${vehicleDescription ?? "none yet"}
+Known part description: ${partDescription ?? "none yet"}
+
+User message: "${userText}"
+
+Based on the current state and next state, answer the user and guide them through this step.`;
+
+  let replyText = "";
+  try {
+    replyText =
+      (await generateChatCompletion({
+        messages: [
+          { role: "system", content: systemMessage },
+          { role: "user", content: userMessage }
+        ]
+      })) || "";
+  } catch (err: any) {
+    console.error("OpenAI reply failed in handleIncomingBotMessage:", err?.message);
+  }
+
+  // Fallback messages if LLM empty
+  if (!replyText) {
+    const lang = nextLanguage ?? language ?? "de";
+    switch (currentStatus) {
+      case "choose_language":
+        replyText =
+          lang === "en"
+            ? "Please choose a language: reply with 1 for Deutsch or 2 for English."
+            : "Bitte wähle eine Sprache: Antworte mit 1 für Deutsch oder 2 für English.";
+        break;
+      case "ask_vehicle_docs":
+        replyText =
+          lang === "en"
+            ? "Please send a photo of your vehicle registration, or tell me VIN/HSN/TSN, or at least make/model/year."
+            : "Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
+        break;
+      case "wait_vehicle_docs":
+        replyText =
+          lang === "en"
+            ? "Got it. Tell me the part you need and where on the car (front/rear, left/right)."
+            : "Alles klar. Welches Teil brauchst du und wo am Auto (vorne/hinten, links/rechts)?";
+        break;
+      case "ask_part_info":
+        replyText =
+          lang === "en"
+            ? "What part do you need? Please include position (front/rear, left/right) and any symptoms."
+            : "Welches Teil brauchst du? Bitte mit Position (vorne/hinten, links/rechts) und Symptomen.";
+        break;
+      case "wait_part_info":
+        replyText =
+          lang === "en"
+            ? "Thanks, I'll check matching parts and get back with options."
+            : "Danke, ich prüfe passende Teile und melde mich mit Angeboten.";
+        break;
+      default:
+        replyText =
+          lang === "en"
+            ? "Your request is being processed. You'll get an update shortly."
+            : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
+    }
+  }
+
+  // Persist updated state
+  try {
+    await updateOrder(order.id, {
+      status: nextStatus,
+      language: nextLanguage ?? language ?? null,
+      vehicle_description: vehicleDescription ?? null,
+      part_description: partDescription ?? null
+    });
+  } catch (err: any) {
+    logger.error("Failed to update order in handleIncomingBotMessage", {
+      error: err?.message,
+      orderId: order.id
+    });
+  }
+
+  return { reply: replyText, orderId: order.id };
 }
