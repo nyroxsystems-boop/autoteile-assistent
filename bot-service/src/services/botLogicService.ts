@@ -480,6 +480,7 @@ export async function handleIncomingBotMessage(
   let nextStatus: ConversationStatus = currentStatus;
   let vehicleDescription = order.vehicle_description;
   let partDescription = order.part_description;
+  let replyText = "";
 
   // Log incoming message best-effort
   try {
@@ -506,10 +507,25 @@ export async function handleIncomingBotMessage(
       } else {
         nextStatus = "choose_language";
       }
+      if (language === "de") {
+        replyText = "Bitte wähle deine Sprache: Antworte mit 1 für Deutsch oder 2 für English.";
+      } else if (language === "en") {
+        replyText = "Please choose a language: reply with 1 for Deutsch or 2 for English.";
+      } else {
+        replyText =
+          "Hallo! Bitte wähle 1 für Deutsch oder 2 für English.\nHello! Please reply 1 for German or 2 for English.";
+      }
       break;
     }
     case "ask_vehicle_docs": {
       nextStatus = "wait_vehicle_docs";
+      if (language === "de") {
+        replyText =
+          "Danke! Bitte sende ein Foto deines Fahrzeugscheins (bevorzugt) oder nenne VIN/HSN/TSN oder Marke/Modell/Baujahr.";
+      } else if (language === "en") {
+        replyText =
+          "Thanks! Please send a photo of your vehicle registration (preferred), or share VIN/HSN/TSN or make/model/year.";
+      }
       break;
     }
     case "wait_vehicle_docs": {
@@ -517,28 +533,56 @@ export async function handleIncomingBotMessage(
         const note = vehicleImageNote || "";
         vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
         nextStatus = "ask_part_info";
+        replyText =
+          language === "de"
+            ? "Fahrzeugschein erhalten. Welches Teil brauchst du? Bitte auch Position (vorne/hinten, links/rechts) und Symptome nennen."
+            : "Got the registration document. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
       } else if (userHasNoDoc || vehicleLooksProvided) {
         vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${userText}` : userText;
         nextStatus = "ask_part_info";
+        replyText =
+          language === "de"
+            ? "Danke für die Fahrzeuginfos. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
+            : "Thanks for the vehicle details. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
       } else if (!vehicleDescription) {
         vehicleDescription = userText || vehicleDescription;
         nextStatus = "ask_part_info";
+        replyText =
+          language === "de"
+            ? "Danke. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
+            : "Thanks. Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
       } else {
         nextStatus = "ask_part_info";
+        replyText =
+          language === "de"
+            ? "Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
+            : "Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
       }
       break;
     }
     case "ask_part_info": {
       nextStatus = "wait_part_info";
+      replyText =
+        language === "de"
+          ? "Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen."
+          : "Which part do you need? Please include position (front/rear, left/right) and any symptoms.";
       break;
     }
     case "wait_part_info": {
       partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
       nextStatus = "processing";
+      replyText =
+        language === "de"
+          ? "Alles klar, ich prüfe jetzt die passenden Teile und melde mich mit einer OEM-Nummer."
+          : "Got it. I’ll check for the matching parts and follow up with the OEM number.";
       break;
     }
     default: {
       nextStatus = currentStatus; // processing/show_offers/done
+      replyText =
+        language === "en"
+          ? "Your request is being processed. You'll get an update shortly."
+          : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
     }
   }
 
@@ -578,17 +622,18 @@ Instructions for you:
 - If the user sends excessive text, politely ask for key points only; keep the reply short.
 `;
 
-  let replyText = "";
-  try {
-    replyText =
-      (await generateChatCompletion({
-        messages: [
-          { role: "system", content: systemMessage },
-          { role: "user", content: userMessage }
-        ]
-      })) || "";
-  } catch (err: any) {
-    console.error("OpenAI reply failed in handleIncomingBotMessage:", err?.message);
+  if (!replyText) {
+    try {
+      replyText =
+        (await generateChatCompletion({
+          messages: [
+            { role: "system", content: systemMessage },
+            { role: "user", content: userMessage }
+          ]
+        })) || "";
+    } catch (err: any) {
+      console.error("OpenAI reply failed in handleIncomingBotMessage:", err?.message);
+    }
   }
 
   // Fallbacks if LLM empty
