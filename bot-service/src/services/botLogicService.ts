@@ -8,7 +8,8 @@ import {
   upsertVehicleForOrderFromPartial,
   getVehicleForOrder,
   updateOrderOEM,
-  listShopOffersByOrderId
+  listShopOffersByOrderId,
+  getOrderById
 } from "./supabaseService";
 import { determineRequiredFields } from "./oemRequiredFieldsService";
 import { resolveOEM } from "./oemService";
@@ -252,6 +253,35 @@ function buildPartFollowUpQuestion(missingFields: string[], partCategory: string
   return null;
 }
 
+/**
+ * Merges newly parsed part info into the existing part info stored in order_data.
+ * Fields are only overwritten when new values are provided.
+ */
+function mergePartInfo(existing: any, parsed: ParsedUserMessage) {
+  const merged: any = {
+    ...existing,
+    partDetails: { ...(existing?.partDetails || {}) }
+  };
+
+  if (parsed.partCategory) {
+    merged.partCategory = parsed.partCategory;
+  }
+  if (parsed.position) {
+    merged.partPosition = parsed.position;
+  }
+  if (parsed.partDetails?.discDiameter !== undefined && parsed.partDetails?.discDiameter !== null) {
+    merged.partDetails.discDiameter = parsed.partDetails.discDiameter;
+  }
+  if (parsed.partDetails?.suspensionType) {
+    merged.partDetails.suspensionType = parsed.partDetails.suspensionType;
+  }
+  if (parsed.part) {
+    merged.partText = merged.partText ? `${merged.partText}\n${parsed.part}` : parsed.part;
+  }
+
+  return merged;
+}
+
 // ------------------------------
 // Schritt 1: Nutzertext analysieren (NLU via OpenAI)
 // ------------------------------
@@ -427,11 +457,33 @@ export async function handleIncomingBotMessage(
 
     // Order laden oder erstellen
     const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
-    let language: "de" | "en" | null =
-      order.language ?? detectLanguageSelection(userText) ?? detectLanguageFromText(userText) ?? null;
+    let language: "de" | "en" | null = order.language ?? null;
+    let languageChanged = false;
+
+    // Nur wenn noch keine Sprache gespeichert ist, heuristisch ermitteln und speichern
+    if (!language) {
+      const detectedLang = detectLanguageSelection(userText) ?? detectLanguageFromText(userText);
+      if (detectedLang) {
+        language = detectedLang;
+        languageChanged = true;
+        try {
+          await updateOrder(order.id, { language });
+        } catch (err: any) {
+          logger.error("Failed to persist detected language", { error: err?.message, orderId: order.id });
+        }
+      }
+    }
     let nextStatus: ConversationStatus = order.status || "choose_language";
     let vehicleDescription = order.vehicle_description;
     let partDescription = order.part_description;
+    // Lade vorhandenes order_data, um kumulativ zu arbeiten
+    let orderData: any = {};
+    try {
+      const fullOrder = await getOrderById(order.id);
+      orderData = fullOrder?.orderData || {};
+    } catch (err: any) {
+      logger.error("Failed to fetch order_data", { error: err?.message, orderId: order.id });
+    }
 
     // Nachricht loggen (best effort)
     try {
@@ -462,6 +514,7 @@ export async function handleIncomingBotMessage(
 
       if (!language && lang) {
         language = lang;
+        languageChanged = true;
         try {
           await updateOrder(order.id, { language });
         } catch (err: any) {
@@ -505,6 +558,12 @@ export async function handleIncomingBotMessage(
         const chosen = pickLanguageFromChoice(userText) ?? detectLanguageFromText(userText);
         if (chosen) {
           language = chosen;
+          languageChanged = true;
+          try {
+            await updateOrder(order.id, { language });
+          } catch (err: any) {
+            logger.error("Failed to persist chosen language", { error: err?.message, orderId: order.id });
+          }
           nextStatus = "collect_vehicle";
           replyText =
             language === "en"
@@ -530,7 +589,7 @@ export async function handleIncomingBotMessage(
           break;
         }
 
-        // Fahrzeugdaten speichern
+        // Fahrzeugdaten speichern (kumulativ)
         await upsertVehicleForOrderFromPartial(order.id, {
           make: parsed.make ?? null,
           model: parsed.model ?? null,
@@ -541,15 +600,16 @@ export async function handleIncomingBotMessage(
           tsn: parsed.tsn ?? null
         });
 
-        // Fehlende Felder prüfen
+        // Kumuliertes Fahrzeug aus DB holen und Pflichtfelder prüfen
+        const vehicle = await getVehicleForOrder(order.id);
         const missingVehicleFields = determineRequiredFields({
-          make: parsed.make ?? undefined,
-          model: parsed.model ?? undefined,
-          year: parsed.year ?? undefined,
-          engine: parsed.engine ?? undefined,
-          vin: parsed.vin ?? undefined,
-          hsn: parsed.hsn ?? undefined,
-          tsn: parsed.tsn ?? undefined
+          make: vehicle?.make,
+          model: vehicle?.model,
+          year: vehicle?.year,
+          engine: vehicle?.engineCode,
+          vin: vehicle?.vin,
+          hsn: vehicle?.hsn,
+          tsn: vehicle?.tsn
         });
 
         if (missingVehicleFields.length > 0) {
@@ -571,31 +631,38 @@ export async function handleIncomingBotMessage(
       }
 
       case "collect_part": {
-        // Teileinfos extrahieren
-        const partCategory = parsed.partCategory || null;
-        const position = parsed.position || null;
-        const mergedPartDetails = parsed.partDetails || {};
+        // Teileinfos kumulativ aus order_data + neuer Nachricht mergen
+        const existingPartInfo = {
+          partCategory: orderData?.partCategory ?? null,
+          partPosition: orderData?.partPosition ?? null,
+          partDetails: orderData?.partDetails ?? {},
+          partText: orderData?.partText ?? null
+        };
+
+        const mergedPartInfo = mergePartInfo(existingPartInfo, parsed);
         partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
 
-        // in order_data speichern
+        // persistierte order_data aktualisieren
         try {
           await updateOrderData(order.id, {
-            partCategory,
-            partPosition: position,
-            partDetails: mergedPartDetails,
-            partText: partDescription
+            partCategory: mergedPartInfo.partCategory ?? null,
+            partPosition: mergedPartInfo.partPosition ?? null,
+            partDetails: mergedPartInfo.partDetails ?? {},
+            partText: mergedPartInfo.partText ?? null
           });
+          orderData = { ...orderData, ...mergedPartInfo };
         } catch (err: any) {
           logger.error("Failed to update order_data with part info", { error: err?.message, orderId: order.id });
         }
 
-        const suff = hasSufficientPartInfo(
-          { ...parsed, partCategory, position, partDetails: mergedPartDetails },
-          { partCategory, partPosition: position, partDetails: mergedPartDetails }
-        );
+        const suff = hasSufficientPartInfo(parsed, orderData);
 
         if (!suff.ok) {
-          const q = buildPartFollowUpQuestion(suff.missing, partCategory, language ?? "de");
+          const q = buildPartFollowUpQuestion(
+            suff.missing,
+            mergedPartInfo.partCategory ?? parsed.partCategory ?? null,
+            language ?? "de"
+          );
           replyText =
             q ||
             (language === "en"
@@ -604,14 +671,15 @@ export async function handleIncomingBotMessage(
           nextStatus = "collect_part";
         } else {
           const partText =
+            mergedPartInfo.partText ||
             parsed.part ||
             (partDescription || "").trim() ||
             (language === "en" ? "the part you mentioned" : "das genannte Teil");
           nextStatus = "oem_lookup";
           replyText =
             language === "en"
-              ? `Got it: ${partText}. I’ll determine the OEM number now and then check offers.`
-              : `Alles klar: ${partText}. Ich ermittle jetzt die OEM-Nummer und prüfe Angebote.`;
+              ? `Great, I’ve got all part details (${partText}). I’ll determine the correct OEM number now.`
+              : `Super, ich habe alle Details zum Teil (${partText}). Ich ermittle jetzt die passende OEM-Nummer.`;
         }
         break;
       }
@@ -731,10 +799,11 @@ export async function handleIncomingBotMessage(
       }
 
       default: {
+        // Unerwarteter Zustand: sauber neustarten
+        nextStatus = "choose_language";
+        language = null;
         replyText =
-          language === "en"
-            ? "I'm working on your request and will update you soon."
-            : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
+          "Es ist ein interner Fehler im Status aufgetreten. Lass uns neu starten: Bitte wähle 1 für Deutsch oder 2 for English.\nThere was an internal state error. Let’s restart: please choose 1 for German or 2 for English.";
       }
     }
 
