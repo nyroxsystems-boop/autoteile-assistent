@@ -534,7 +534,7 @@ export async function handleIncomingBotMessage(
     }
     case "wait_part_info": {
       partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
-      nextStatus = "done";
+      nextStatus = "processing";
       break;
     }
     default: {
