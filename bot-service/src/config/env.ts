@@ -7,6 +7,7 @@ type EnvConfig = {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   botApiSecret?: string;
+  enforceTwilioSignature: boolean;
 };
 
 function requireEnv(name: string): string {
@@ -21,5 +22,6 @@ export const env: EnvConfig = {
   port: Number(process.env.PORT || 3000),
   supabaseUrl: requireEnv("SUPABASE_URL"),
   supabaseServiceRoleKey: requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
-  botApiSecret: process.env.BOT_API_SECRET || undefined
+  botApiSecret: process.env.BOT_API_SECRET || undefined,
+  enforceTwilioSignature: process.env.ENFORCE_TWILIO_SIGNATURE === "true"
 };

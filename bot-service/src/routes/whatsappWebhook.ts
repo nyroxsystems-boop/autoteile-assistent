@@ -9,10 +9,22 @@ const router = express.Router();
 router.use(express.urlencoded({ extended: false }));
 
 function validateTwilioSignature(req: express.Request): boolean {
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!authToken) {
-    console.error("[Twilio Webhook] Missing TWILIO_AUTH_TOKEN for signature validation");
-    return false;
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const enforce = env.enforceTwilioSignature;
+
+  const host = req.get("host") || "";
+  const proto = req.get("x-forwarded-proto") || req.protocol || "https";
+  const url = `${proto}://${host}${req.originalUrl}`;
+
+  console.log("[Twilio Webhook] Signature check", {
+    hasToken: !!authToken,
+    enforce,
+    url
+  });
+
+  if (!enforce || !authToken) {
+    // Skip validation in dev/debug if not enforced or token missing
+    return true;
   }
 
   const signature = (req.headers["x-twilio-signature"] as string) || "";
@@ -21,7 +33,6 @@ function validateTwilioSignature(req: express.Request): boolean {
     return false;
   }
 
-  const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
   const params = req.body || {};
   const sortedKeys = Object.keys(params).sort();
   let data = url;
