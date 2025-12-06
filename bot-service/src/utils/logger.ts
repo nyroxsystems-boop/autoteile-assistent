@@ -9,9 +9,27 @@ type Meta = Record<string, unknown> | Error | undefined;
  *   logger.info({ component: "DashboardAPI", orderId }, "Fetched order");
  *   logger.error({ component: "Webhook", error }, "Failed to handle message");
  */
-function log(level: LogLevel, metaOrMessage: Meta | string, maybeMessage?: string, maybeMeta?: Meta) {
-  const message = typeof metaOrMessage === "string" ? metaOrMessage : maybeMessage ?? "";
-  const meta = typeof metaOrMessage === "string" ? maybeMeta : metaOrMessage;
+function log(
+  level: LogLevel,
+  metaOrMessage: Meta | string,
+  maybeMessage?: string | Meta,
+  maybeMeta?: Meta
+) {
+  const message =
+    typeof metaOrMessage === "string"
+      ? typeof maybeMessage === "string"
+        ? maybeMessage
+        : metaOrMessage
+      : typeof maybeMessage === "string"
+      ? maybeMessage
+      : "";
+
+  const meta =
+    typeof metaOrMessage === "string"
+      ? typeof maybeMessage === "string"
+        ? maybeMeta
+        : (maybeMessage as Meta)
+      : metaOrMessage;
 
   const payload = {
     level,
@@ -37,12 +55,12 @@ function serializeMeta(meta: Meta) {
 }
 
 export const logger = {
-  debug: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+  debug: (metaOrMessage: Meta | string, message?: string | Meta, meta?: Meta) =>
     log("debug", metaOrMessage, message, meta),
-  info: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+  info: (metaOrMessage: Meta | string, message?: string | Meta, meta?: Meta) =>
     log("info", metaOrMessage, message, meta),
-  warn: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+  warn: (metaOrMessage: Meta | string, message?: string | Meta, meta?: Meta) =>
     log("warn", metaOrMessage, message, meta),
-  error: (metaOrMessage: Meta | string, message?: string, meta?: Meta) =>
+  error: (metaOrMessage: Meta | string, message?: string | Meta, meta?: Meta) =>
     log("error", metaOrMessage, message, meta)
 };
