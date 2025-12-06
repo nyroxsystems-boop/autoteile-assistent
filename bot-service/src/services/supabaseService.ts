@@ -194,7 +194,7 @@ export async function listOrders(limit = 50): Promise<LegacyOrder[]> {
 export async function findOrCreateOrder(from: string, orderId?: string | null): Promise<Order> {
   const client = getClient();
 
-  // 1) If orderId is provided, try to load it. If not found, fall back to lookup by from.
+  // 1) Wenn orderId angegeben: versuchen, genau diese Order zu laden
   if (orderId) {
     const { data, error } = await client.from("orders").select("*").eq("id", orderId).single();
     if (error && error.code !== "PGRST116") {
@@ -206,26 +206,51 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
     }
   }
 
-  // 2) Find the most recent open order for this sender (status != 'done')
-  const { data: openOrders, error: openError } = await client
+  // 2) Letzte Order für diesen Absender laden (egal welcher Status)
+  const { data: rows, error: searchError } = await client
     .from("orders")
     .select("*")
     .eq("customer_contact", from)
-    .neq("status", "done")
     .order("created_at", { ascending: false })
     .limit(1);
 
-  if (openError) {
-    console.error("Failed to search existing open order", { error: openError.message, from });
+  if (searchError) {
+    console.error("Failed to search existing order", { error: searchError.message, from });
     throw new Error("Failed to find or create order");
   }
 
-  const existing = openOrders && openOrders[0] ? mapRowToConversationOrder(openOrders[0]) : null;
-  if (existing) {
-    return existing;
+  const latestRow = rows && rows[0] ? rows[0] : null;
+
+  if (latestRow) {
+    const orderData = latestRow.order_data || {};
+    const convStatus = (orderData.conversationStatus as ConversationStatus | string | null) ?? null;
+    const businessStatus = (latestRow.status as string | null) ?? null;
+
+    const activeFlowStates = new Set([
+      "choose_language",
+      "ask_language",
+      "ask_vehicle_docs",
+      "wait_vehicle_docs",
+      "ask_part_info",
+      "wait_part_info",
+      "collect_vehicle",
+      "collect_part"
+    ]);
+
+    // Treat business states that indicate backend processing or closure as non-active
+    const closedBusinessStates = new Set(["processing", "ready", "ordered", "done"]);
+    const closedConvStates = new Set(["processing", "show_offers", "done"]);
+
+    const isConversationFlowActive = convStatus ? activeFlowStates.has(convStatus) : false;
+    const isBusinessClosed = businessStatus ? closedBusinessStates.has(businessStatus) : false;
+    const isConversationClosedOrStuck = convStatus ? closedConvStates.has(convStatus) : false;
+
+    if (isConversationFlowActive && !isBusinessClosed && !isConversationClosedOrStuck) {
+      return mapRowToConversationOrder(latestRow);
+    }
   }
 
-  // 3) No open order found → create new
+  // 3) Neue Order anlegen, wenn keine passende aktive gefunden wurde
   const payload = {
     customer_contact: from,
     requested_part_name: "pending",
