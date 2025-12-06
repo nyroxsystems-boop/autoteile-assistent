@@ -10,6 +10,7 @@ import botMessageRouter from "./routes/botMessage";
 import oemRouter from "./routes/oem";
 import orderAutoSelectRouter from "./routes/orderAutoSelect";
 import orderAutoOrderRouter from "./routes/orderAutoOrder";
+import whatsappWebhookRouter from "./routes/whatsappWebhook";
 
 const app = express();
 
@@ -51,17 +52,13 @@ app.use("/api/oem", oemRouter);
 // Bot-Pipeline für eingehende Nachrichten
 app.use("/bot/message", botMessageRouter);
 
+// Twilio WhatsApp Webhook (receives form-encoded payloads)
+app.use("/webhook/whatsapp", whatsappWebhookRouter);
+
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte
 // WhatsApp-API angesprochen.
 app.use("/simulate/whatsapp", simulateWhatsappRouter);
-
-// Platzhalter-Route für den echten WhatsApp-Webhook
-// Diese Route wird in einem späteren Schritt mit echter WhatsApp-Logik gefüllt.
-app.post("/webhook/whatsapp", (req, res) => {
-  console.log("Incoming WhatsApp payload (real webhook placeholder):", req.body);
-  res.sendStatus(200);
-});
 
 // Serverstart
 app.listen(env.port, () => {
