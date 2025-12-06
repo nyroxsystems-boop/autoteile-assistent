@@ -197,39 +197,42 @@ export async function listOrders(limit = 50): Promise<LegacyOrder[]> {
 export async function findOrCreateOrder(from: string, orderId?: string | null): Promise<Order> {
   const client = getClient();
 
+  // 1) If orderId is provided, try to load it. If not found, fall back to lookup by from.
   if (orderId) {
     const { data, error } = await client.from("orders").select("*").eq("id", orderId).single();
-    if (error) {
+    if (error && error.code !== "PGRST116") {
       console.error("Failed to fetch order by id", { error: error.message, orderId });
-      throw new Error("Failed to fetch order by id");
+      throw new Error("Failed to find or create order");
     }
-    if (!data) {
-      throw new Error("Order not found");
+    if (data) {
+      return mapRowToConversationOrder(data);
     }
-    return mapRowToConversationOrder(data);
   }
 
-  const { data, error } = await client
+  // 2) Find the most recent open order for this sender (status != 'done')
+  const { data: openOrders, error: openError } = await client
     .from("orders")
     .select("*")
     .eq("customer_contact", from)
+    .neq("status", "done")
     .order("created_at", { ascending: false })
     .limit(1);
 
-  if (error) {
-    console.error("Failed to search existing order", { error: error.message, from });
-    throw new Error("Failed to search existing order");
+  if (openError) {
+    console.error("Failed to search existing open order", { error: openError.message, from });
+    throw new Error("Failed to find or create order");
   }
 
-  const existing = data && data[0] ? mapRowToConversationOrder(data[0]) : null;
-  if (existing && existing.status !== "done") {
+  const existing = openOrders && openOrders[0] ? mapRowToConversationOrder(openOrders[0]) : null;
+  if (existing) {
     return existing;
   }
 
+  // 3) No open order found → create new
   const payload = {
     customer_contact: from,
     requested_part_name: "pending",
-    status: "choose_language",
+    status: "choose_language" as ConversationStatus,
     language: null,
     order_data: {
       conversationStatus: "choose_language",
@@ -241,7 +244,7 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
   const { data: created, error: createError } = await client.from("orders").insert(payload).select("*").single();
   if (createError) {
     console.error("Failed to create order", { error: createError.message, from });
-    throw new Error("Failed to create order");
+    throw new Error("Failed to find or create order");
   }
 
   return mapRowToConversationOrder(created);

@@ -406,11 +406,20 @@ export interface BotMessagePayload {
   orderId?: string | null;
 }
 
-function pickLanguage(text: string): "de" | "en" | null {
+// Helper: detect explicit language choice in the language selection step
+function pickLanguageFromChoice(text: string): "de" | "en" | null {
   const t = text.toLowerCase();
   if (t.includes("1") || t.includes("deutsch")) return "de";
   if (t.includes("2") || t.includes("english")) return "en";
   return null;
+}
+
+// Helper: detect if user text contains vehicle hints (brand/model/year)
+function hasVehicleHints(text: string): boolean {
+  const t = text.toLowerCase();
+  const brands = ["bmw", "audi", "vw", "volkswagen", "mercedes", "benz", "ford", "opel", "skoda", "seat", "toyota", "honda", "hyundai", "kia"];
+  const yearPattern = /\b(19|20)\d{2}\b/;
+  return brands.some((b) => t.includes(b)) || yearPattern.test(t);
 }
 
 // ------------------------------
@@ -420,14 +429,18 @@ export async function handleIncomingBotMessage(
   payload: BotMessagePayload
 ): Promise<{ reply: string; orderId: string }> {
   const userText = (payload.text || "").trim();
+  const textLower = userText.toLowerCase();
+  const noDocKeywords = ["kein fahrzeugschein", "nicht dabei", "no registration", "don't have it", "keinen schein", "kein schein"];
+  const userHasNoDoc = noDocKeywords.some((k) => textLower.includes(k));
+  const vehicleLooksProvided = hasVehicleHints(userText);
 
   // Load or create order
   const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
-  const language = (order.language as "de" | "en" | null) ?? null;
   const currentStatus: ConversationStatus = order.status || "choose_language";
 
+  // Language: once set, do not auto-change
+  let language: "de" | "en" | null = order.language ?? null;
   let nextStatus: ConversationStatus = currentStatus;
-  let nextLanguage: "de" | "en" | null = language;
   let vehicleDescription = order.vehicle_description;
   let partDescription = order.part_description;
 
@@ -446,12 +459,12 @@ export async function handleIncomingBotMessage(
     logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
   }
 
-  // State machine decisions
+  // State machine
   switch (currentStatus) {
     case "choose_language": {
-      const sel = pickLanguage(userText);
-      if (sel) {
-        nextLanguage = sel;
+      const chosen = pickLanguageFromChoice(userText);
+      if (chosen) {
+        language = chosen;
         nextStatus = "ask_vehicle_docs";
       } else {
         nextStatus = "choose_language";
@@ -463,10 +476,15 @@ export async function handleIncomingBotMessage(
       break;
     }
     case "wait_vehicle_docs": {
-      vehicleDescription = vehicleDescription
-        ? `${vehicleDescription}\n${userText}`
-        : userText;
-      nextStatus = "ask_part_info";
+      if (userHasNoDoc || vehicleLooksProvided) {
+        vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${userText}` : userText;
+        nextStatus = "ask_part_info";
+      } else if (!vehicleDescription) {
+        vehicleDescription = userText || vehicleDescription;
+        nextStatus = "ask_part_info";
+      } else {
+        nextStatus = "ask_part_info";
+      }
       break;
     }
     case "ask_part_info": {
@@ -479,26 +497,33 @@ export async function handleIncomingBotMessage(
       break;
     }
     default: {
-      // processing/show_offers/done
-      nextStatus = currentStatus;
+      nextStatus = currentStatus; // processing/show_offers/done
     }
   }
 
-  // Build prompt for LLM
+  // Build LLM prompt
   const systemMessage = `${BOT_SYSTEM_PROMPT}
+
 Current conversation state: ${currentStatus}
-Current language code: ${nextLanguage ?? language ?? "null"}.`;
+Current language code: ${language ?? "null"}.`;
 
   const userMessage = `
-Current state: ${currentStatus}
-Next state the backend wants to move to: ${nextStatus}
-Language code: ${nextLanguage ?? language ?? "null"}
-Known vehicle description: ${vehicleDescription ?? "none yet"}
-Known part description: ${partDescription ?? "none yet"}
+Backend perspective:
+- Current state: ${currentStatus}
+- Next state: ${nextStatus}
+- User language: ${language ?? "null"}
+- Vehicle description (so far): ${vehicleDescription ?? "none yet"}
+- Part description (so far): ${partDescription ?? "none yet"}
+- User explicitly has registration document: ${userHasNoDoc ? "NO" : "UNKNOWN"}
+- User text looks like vehicle info (make/model/year): ${vehicleLooksProvided ? "YES" : "NO"}
 
-User message: "${userText}"
+User message: "${payload.text}"
 
-Based on the current state and next state, answer the user and guide them through this step.`;
+Instructions for you:
+- Stay within the current step and the backend's nextState.
+- If vehicle_description is already present, do NOT ask again for the registration document.
+- If userHasNoDoc = NO, focus on make/model/year and other textual identifiers.
+`;
 
   let replyText = "";
   try {
@@ -513,9 +538,9 @@ Based on the current state and next state, answer the user and guide them throug
     console.error("OpenAI reply failed in handleIncomingBotMessage:", err?.message);
   }
 
-  // Fallback messages if LLM empty
+  // Fallbacks if LLM empty
   if (!replyText) {
-    const lang = nextLanguage ?? language ?? "de";
+    const lang = language ?? "de";
     switch (currentStatus) {
       case "choose_language":
         replyText =
@@ -524,42 +549,32 @@ Based on the current state and next state, answer the user and guide them throug
             : "Bitte wähle eine Sprache: Antworte mit 1 für Deutsch oder 2 für English.";
         break;
       case "ask_vehicle_docs":
-        replyText =
-          lang === "en"
-            ? "Please send a photo of your vehicle registration, or tell me VIN/HSN/TSN, or at least make/model/year."
-            : "Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
-        break;
       case "wait_vehicle_docs":
         replyText =
           lang === "en"
-            ? "Got it. Tell me the part you need and where on the car (front/rear, left/right)."
-            : "Alles klar. Welches Teil brauchst du und wo am Auto (vorne/hinten, links/rechts)?";
+            ? "Send a photo of your registration if possible, otherwise tell me make/model/year and VIN/HSN/TSN."
+            : "Schick mir ein Foto deines Fahrzeugscheins, oder nenne Marke/Modell/Baujahr und VIN/HSN/TSN.";
         break;
       case "ask_part_info":
         replyText =
           lang === "en"
-            ? "What part do you need? Please include position (front/rear, left/right) and any symptoms."
-            : "Welches Teil brauchst du? Bitte mit Position (vorne/hinten, links/rechts) und Symptomen.";
+            ? "Which part do you need? Please add front/rear, left/right, and any symptoms."
+            : "Welches Teil brauchst du? Bitte mit vorne/hinten, links/rechts und eventuellen Symptomen.";
         break;
       case "wait_part_info":
+      default:
         replyText =
           lang === "en"
             ? "Thanks, I'll check matching parts and get back with options."
             : "Danke, ich prüfe passende Teile und melde mich mit Angeboten.";
-        break;
-      default:
-        replyText =
-          lang === "en"
-            ? "Your request is being processed. You'll get an update shortly."
-            : "Deine Anfrage ist in Bearbeitung. Du bekommst gleich ein Update.";
     }
   }
 
-  // Persist updated state
+  // Persist updated order
   try {
     await updateOrder(order.id, {
       status: nextStatus,
-      language: nextLanguage ?? language ?? null,
+      language,
       vehicle_description: vehicleDescription ?? null,
       part_description: partDescription ?? null
     });
