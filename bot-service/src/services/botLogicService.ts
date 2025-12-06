@@ -1,4 +1,8 @@
 import OpenAI from "openai";
+import type {
+  ResponseOutputMessage,
+  ResponseOutputText
+} from "openai/resources/responses/responses";
 import type { Order } from "../types/models";
 import {
   insertMessage,
@@ -260,10 +264,22 @@ ${text}
     const completion = await client.responses.create({
       model: "gpt-4.1-mini",
       input: prompt,
-      response_format: { type: "json" }
+      text: { format: { type: "json_object" } }
     });
 
-    return completion.output[0].content[0].text as ParsedUserMessage;
+    const message = completion.output.find(
+      (item): item is ResponseOutputMessage => item.type === "message"
+    );
+
+    const textContent = message?.content.find(
+      (part): part is ResponseOutputText => part.type === "output_text"
+    )?.text;
+
+    if (!textContent) {
+      throw new Error("Model returned no text output");
+    }
+
+    return JSON.parse(textContent) as ParsedUserMessage;
   } catch (error: any) {
     logger.error("parseUserMessage failed", { error: error?.message, text });
 
