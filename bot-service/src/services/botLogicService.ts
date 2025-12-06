@@ -492,17 +492,27 @@ export async function handleIncomingBotMessage(
 
     switch (nextStatus) {
       case "choose_language": {
+        // Wenn bereits Sprache gesetzt ist, nicht erneut fragen
+        if (language) {
+          nextStatus = "collect_vehicle";
+          replyText =
+            language === "en"
+              ? "Hello and welcome! Please send a photo of your registration document, or tell me VIN/HSN/TSN, or at least make/model/year."
+              : "Hallo und willkommen! Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
+          break;
+        }
+
         const chosen = pickLanguageFromChoice(userText) ?? detectLanguageFromText(userText);
         if (chosen) {
           language = chosen;
           nextStatus = "collect_vehicle";
           replyText =
             language === "en"
-              ? "Thanks! Please send a photo of your registration document or tell me make/model/year (VIN/HSN/TSN if you have it)."
-              : "Danke! Bitte sende ein Foto deines Fahrzeugscheins oder nenne Marke/Modell/Baujahr (VIN/HSN/TSN falls vorhanden).";
+              ? "Hello and welcome! Please send a photo of your registration document, or tell me VIN/HSN/TSN, or at least make/model/year."
+              : "Hallo und willkommen! Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
         } else {
           replyText =
-            "Bitte wähle 1 für Deutsch oder 2 für English.\nPlease choose 1 for German or 2 for English.";
+            "Hallo und willkommen! Bitte wähle 1 für Deutsch oder 2 for English.\nHello and welcome! Please choose 1 for German or 2 for English.";
         }
         break;
       }
@@ -544,7 +554,11 @@ export async function handleIncomingBotMessage(
 
         if (missingVehicleFields.length > 0) {
           const q = buildVehicleFollowUpQuestion(missingVehicleFields, language ?? "de");
-          replyText = q || (language === "en" ? "Can you share more vehicle details?" : "Kannst du mir mehr Fahrzeugdaten nennen?");
+          replyText =
+            q ||
+            (language === "en"
+              ? "Please share VIN or HSN/TSN, or at least make/model/year, so I can identify your car."
+              : "Bitte nenne mir VIN oder HSN/TSN oder mindestens Marke/Modell/Baujahr, damit ich dein Auto identifizieren kann.");
           nextStatus = "collect_vehicle";
         } else {
           nextStatus = "collect_part";
@@ -582,14 +596,22 @@ export async function handleIncomingBotMessage(
 
         if (!suff.ok) {
           const q = buildPartFollowUpQuestion(suff.missing, partCategory, language ?? "de");
-          replyText = q || (language === "en" ? "Could you share a bit more about the part?" : "Kannst du mir noch etwas mehr zum Teil sagen?");
+          replyText =
+            q ||
+            (language === "en"
+              ? "Please describe the exact part you need, the position (front/rear, left/right), and any symptoms or a part number if you have one."
+              : "Bitte beschreibe genau, welches Teil du brauchst, die Position (vorne/hinten, links/rechts) und eventuelle Symptome oder eine Teilenummer, falls vorhanden.");
           nextStatus = "collect_part";
         } else {
+          const partText =
+            parsed.part ||
+            (partDescription || "").trim() ||
+            (language === "en" ? "the part you mentioned" : "das genannte Teil");
           nextStatus = "oem_lookup";
           replyText =
             language === "en"
-              ? "Thanks, I’ll determine the OEM number now and then check offers."
-              : "Danke, ich ermittle jetzt die OEM-Nummer und prüfe Angebote.";
+              ? `Got it: ${partText}. I’ll determine the OEM number now and then check offers.`
+              : `Alles klar: ${partText}. Ich ermittle jetzt die OEM-Nummer und prüfe Angebote.`;
         }
         break;
       }
