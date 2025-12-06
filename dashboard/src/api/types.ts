@@ -29,12 +29,18 @@ export type OrderPart = {
 
 export type Order = {
   id: string;
-  status: OrderStatus;
+  status: OrderStatus | string;
   language: OrderLanguage;
-  created_at: string;
-  updated_at: string;
-  vehicle: Vehicle;
-  part: OrderPart;
+  created_at?: string;
+  updated_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  customerId?: string | null;
+  customerPhone?: string | null;
+  totalPrice?: number | null;
+  total_price?: number | null;
+  vehicle?: Vehicle;
+  part?: OrderPart;
 };
 
 export type ShopOffer = {

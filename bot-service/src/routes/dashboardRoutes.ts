@@ -13,6 +13,7 @@ export function createDashboardRouter(): Router {
 
   router.get("/orders", async (_req: Request, res: Response) => {
     console.log("[DashboardAPI] GET /dashboard/orders called");
+    console.log("[DashboardAPI] Fetching orders for /dashboard/orders");
     try {
       const statuses = ["collect_part", "oem_lookup", "show_offers", "done", "aborted"];
       console.log("[DashboardAPI] Fetching orders with status in", statuses);
@@ -33,20 +34,42 @@ export function createDashboardRouter(): Router {
       const orderIds = (orders ?? []).map((o: any) => o.id);
       console.log("[DashboardAPI] Orders fetched:", orderIds.length);
 
-      const { data: vehicles, error: vehiclesError } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("order_id", orderIds);
-
-      if (vehiclesError) {
-        console.error("[DashboardAPI] Error fetching vehicles:", vehiclesError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch vehicles", details: vehiclesError.message });
-      }
-
       const vehicleByOrderId = new Map<string, any>();
-      (vehicles ?? []).forEach((v: any) => vehicleByOrderId.set(v.order_id, v));
+      if (orderIds.length > 0) {
+        console.log("[DashboardAPI] Fetching vehicles for orders", orderIds);
+        try {
+          const { data: vehicles, error: vehiclesError } = await supabase
+            .from("vehicles")
+            .select("*")
+            .in("order_id", orderIds);
+
+          if (vehiclesError) {
+            console.error("[DashboardAPI] Error fetching vehicles:", vehiclesError);
+            if (
+              typeof vehiclesError.message === "string" &&
+              vehiclesError.message.toLowerCase().includes("not find the table")
+            ) {
+              console.warn(
+                "[DashboardAPI] Vehicle table not found, continuing without vehicle data",
+                vehiclesError.message
+              );
+            } else {
+              // For other vehicle errors, still continue but log.
+              console.warn(
+                "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
+                vehiclesError.message
+              );
+            }
+          } else {
+            (vehicles ?? []).forEach((v: any) => vehicleByOrderId.set(v.order_id, v));
+          }
+        } catch (vehicleErr: any) {
+          console.warn(
+            "[DashboardAPI] Vehicle fetch threw, continuing without vehicle data",
+            vehicleErr?.message ?? vehicleErr
+          );
+        }
+      }
 
       const responseOrders = (orders ?? []).map((row: any) =>
         mapOrderRowToDashboardOrder(row, vehicleByOrderId.get(row.id))
@@ -83,17 +106,37 @@ export function createDashboardRouter(): Router {
         return res.status(404).json({ error: "Order not found" });
       }
 
-      const { data: vehicle, error: vehicleError } = await supabase
-        .from("vehicles")
-        .select("*")
-        .eq("order_id", orderId)
-        .maybeSingle();
+      let vehicle: any | null = null;
+      try {
+        const { data: vehicleRow, error: vehicleError } = await supabase
+          .from("vehicles")
+          .select("*")
+          .eq("order_id", orderId)
+          .maybeSingle();
 
-      if (vehicleError) {
-        console.error("[DashboardAPI] Error fetching vehicle for order:", vehicleError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch vehicle", details: vehicleError.message });
+        if (vehicleError) {
+          if (
+            typeof vehicleError.message === "string" &&
+            vehicleError.message.toLowerCase().includes("not find the table")
+          ) {
+            console.warn(
+              "[DashboardAPI] Vehicle table not found, continuing without vehicle data",
+              vehicleError.message
+            );
+          } else {
+            console.warn(
+              "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
+              vehicleError.message
+            );
+          }
+        } else {
+          vehicle = vehicleRow ?? null;
+        }
+      } catch (vehErr: any) {
+        console.warn(
+          "[DashboardAPI] Vehicle fetch threw, continuing without vehicle data",
+          vehErr?.message ?? vehErr
+        );
       }
 
       const responseOrder = mapOrderRowToDashboardOrder(order, vehicle ?? undefined);

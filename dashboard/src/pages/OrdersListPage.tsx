@@ -3,7 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { listOrders } from '../api/orders';
 import type { Order } from '../api/types';
 
-const allowedStatuses: Order['status'][] = ['oem_lookup', 'show_offers', 'done'];
+const statusLabelMap: Record<string, string> = {
+  collect_vehicle: 'Fahrzeugdaten sammeln',
+  collect_part: 'Teiledaten sammeln',
+  oem_lookup: 'OEM-Ermittlung',
+  show_offers: 'Angebote anzeigen',
+  done: 'Abgeschlossen',
+  choose_language: 'Sprache wählen'
+};
 
 const OrdersListPage = () => {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -18,18 +25,16 @@ const OrdersListPage = () => {
 
   useEffect(() => {
     const fetchOrders = async () => {
-      console.log('[OrdersListPage] fetching orders');
+      console.log('[OrdersListPage] Bestellungen werden geladen...');
       setIsLoading(true);
       setError(null);
-
       try {
         const data = await listOrders();
-        console.log(`[OrdersListPage] fetched ${data.length} orders`);
-        const filtered = data.filter((order) => allowedStatuses.includes(order.status));
-        setOrders(filtered);
+        console.log('[OrdersListPage] Bestellungen geladen:', data.length);
+        setOrders(data);
       } catch (err) {
-        console.error('[OrdersListPage] failed to fetch orders', err);
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        console.error('[OrdersListPage] Fehler beim Laden der Bestellungen', err);
+        setError(err instanceof Error ? err.message : 'Unbekannter Fehler');
       } finally {
         setIsLoading(false);
       }
@@ -38,57 +43,73 @@ const OrdersListPage = () => {
     fetchOrders();
   }, []);
 
-  const formatDate = (isoDate: string) =>
-    new Date(isoDate).toLocaleString(undefined, {
-      dateStyle: 'medium',
-      timeStyle: 'short'
-    });
+  const rows = useMemo(() => orders, [orders]);
 
-  const renderVehicle = (order: Order) => {
-    if (!order.vehicle) return '—';
-    const { make, model, year, vin } = order.vehicle;
-    const parts = [make, model, year ? year.toString() : null].filter(Boolean).join(' ');
-    return (
-      <>
-        <div>{parts || 'Vehicle TBD'}</div>
-        {vin ? <div style={styles.muted}>VIN: {vin}</div> : null}
-      </>
-    );
+  const renderDate = (date?: string) => {
+    if (!date) return '–';
+    return new Date(date).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   };
 
-  const renderPart = (order: Order) => {
-    if (!order.part) return '—';
-    const { partCategory, position, oemStatus, oemNumber } = order.part;
-    const flagged = oemStatus === 'not_found' || oemStatus === 'multiple_matches';
+  const renderStatus = (status: string) => statusLabelMap[status] ?? status ?? '–';
+
+  const renderVehicle = (order: Order) => {
+    const vehicle = order.vehicle ?? null;
+    if (!vehicle) return '–';
+    const ident = vehicle.vin || [vehicle.hsn, vehicle.tsn].filter(Boolean).join('/') || '–';
     return (
-      <div style={flagged ? styles.flagged : undefined}>
-        <div>{partCategory ?? 'Part category TBD'}</div>
-        <div style={styles.muted}>
-          {position ?? 'position n/a'} · OEM status: {oemStatus ?? 'pending'}
+      <div style={styles.cellStack}>
+        <div>
+          {vehicle.make ?? '-'} {vehicle.model ?? ''}
         </div>
-        {oemNumber ? <div style={styles.muted}>OEM: {oemNumber}</div> : null}
+        <div style={styles.muted}>
+          Bj. {vehicle.year ?? '-'} · Identifikation: {ident}
+        </div>
       </div>
     );
   };
 
-  const rows = useMemo(() => orders, [orders]);
+  const renderPart = (order: Order) => {
+    const part = order.part ?? null;
+    if (!part) return '–';
+    return (
+      <div style={styles.cellStack}>
+        <div>{part.partCategory ?? '-'}</div>
+        <div style={styles.muted}>{part.partText ?? '-'}</div>
+      </div>
+    );
+  };
+
+  const renderPrice = (order: Order) => {
+    const value = order.totalPrice ?? order.total_price ?? null;
+    if (value === null || value === undefined) return '–';
+    return `€ ${value.toFixed(2)}`;
+  };
+
+  const renderCustomer = (order: Order) => {
+    return (
+      <div style={styles.cellStack}>
+        <div>Kunden-ID: {order.customerId ?? '-'}</div>
+        <div style={styles.muted}>Telefon: {order.customerPhone ?? '-'}</div>
+      </div>
+    );
+  };
 
   return (
     <div style={styles.wrapper}>
       <div style={styles.headerRow}>
         <div>
-          <p style={styles.subtitle}>Orders ready for OEM lookup, offers, or completed</p>
-          <h2 style={styles.title}>Orders</h2>
+          <p style={styles.subtitle}>Alle Bestellungen aus dem WhatsApp-Bot</p>
+          <h2 style={styles.title}>Bestellungen</h2>
         </div>
         <div style={styles.meta}>
-          {isLoading ? <span style={styles.pill}>Loading…</span> : null}
-          {!isLoading ? <span style={styles.pill}>{rows.length} visible</span> : null}
+          {isLoading ? <span style={styles.pill}>Lädt…</span> : null}
+          {!isLoading ? <span style={styles.pill}>{rows.length} sichtbar</span> : null}
         </div>
       </div>
 
       {error ? (
         <div style={styles.errorBox}>
-          <strong>Error:</strong> {error}
+          <strong>Fehler:</strong> {error}
         </div>
       ) : null}
 
@@ -96,66 +117,58 @@ const OrdersListPage = () => {
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>ID</th>
+              <th style={styles.th}>Bestellung</th>
+              <th style={styles.th}>Kunde</th>
+              <th style={styles.th}>Fahrzeug</th>
+              <th style={styles.th}>Teil</th>
+              <th style={styles.th}>Preis</th>
               <th style={styles.th}>Status</th>
-              <th style={styles.th}>Created</th>
-              <th style={styles.th}>Language</th>
-              <th style={styles.th}>Vehicle</th>
-              <th style={styles.th}>Part</th>
+              <th style={styles.th}>Erstellt</th>
               <th style={styles.th}></th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
-                <td style={styles.td} colSpan={7}>
-                  Loading orders…
+                <td style={styles.td} colSpan={8}>
+                  Bestellungen werden geladen…
                 </td>
               </tr>
             ) : null}
 
             {!isLoading && rows.length === 0 ? (
               <tr>
-                <td style={styles.td} colSpan={7}>
-                  No orders to show for the selected statuses.
+                <td style={styles.td} colSpan={8}>
+                  Keine Bestellungen vorhanden.
                 </td>
               </tr>
             ) : null}
 
             {!isLoading &&
-              rows.map((order) => {
-                const flagged =
-                  order.part?.oemStatus === 'not_found' ||
-                  order.part?.oemStatus === 'multiple_matches';
-
-                return (
-                  <tr
-                    key={order.id}
-                    style={{
-                      ...styles.tr,
-                      ...(flagged ? styles.trFlagged : {})
-                    }}
-                  >
-                    <td style={styles.td}>{order.id}</td>
-                    <td style={styles.td}>{order.status}</td>
-                    <td style={styles.td}>{formatDate(order.created_at)}</td>
-                    <td style={styles.td}>{order.language ?? 'n/a'}</td>
-                    <td style={styles.td}>{renderVehicle(order)}</td>
-                    <td style={styles.td}>{renderPart(order)}</td>
-                    <td style={styles.td}>
-                      <button
-                        style={styles.viewButton}
-                        onClick={() => {
-                          console.log('[OrdersListPage] navigating to order', order.id);
-                          navigate(`/orders/${order.id}`);
-                        }}
-                      >
-                        View
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              rows.map((order) => (
+                <tr key={order.id} style={styles.tr}>
+                  <td style={styles.td}>{order.id}</td>
+                  <td style={styles.td}>{renderCustomer(order)}</td>
+                  <td style={styles.td}>{renderVehicle(order)}</td>
+                  <td style={styles.td}>{renderPart(order)}</td>
+                  <td style={styles.td}>{renderPrice(order)}</td>
+                  <td style={styles.td}>{renderStatus(String(order.status))}</td>
+                  <td style={styles.td}>
+                    {renderDate(order.created_at ?? order.createdAt ?? undefined)}
+                  </td>
+                  <td style={styles.tdAction}>
+                    <button
+                      style={styles.viewButton}
+                      onClick={() => {
+                        console.log('[OrdersListPage] navigating to order', order.id);
+                        navigate(`/orders/${order.id}`);
+                      }}
+                    >
+                      Details ansehen
+                    </button>
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
@@ -215,7 +228,7 @@ const styles: Record<string, CSSProperties> = {
   table: {
     width: '100%',
     borderCollapse: 'collapse',
-    minWidth: 900
+    minWidth: 1000
   },
   th: {
     textAlign: 'left',
@@ -229,22 +242,24 @@ const styles: Record<string, CSSProperties> = {
   tr: {
     borderBottom: '1px solid #e2e8f0'
   },
-  trFlagged: {
-    backgroundColor: '#fff7ed'
-  },
   td: {
     padding: '12px 14px',
     verticalAlign: 'top',
     fontSize: 14,
     color: '#0f172a'
   },
+  tdAction: {
+    padding: '12px 14px',
+    verticalAlign: 'middle'
+  },
+  cellStack: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4
+  },
   muted: {
     color: '#64748b',
     fontSize: 13
-  },
-  flagged: {
-    borderLeft: '4px solid #f97316',
-    paddingLeft: 8
   },
   viewButton: {
     padding: '8px 12px',

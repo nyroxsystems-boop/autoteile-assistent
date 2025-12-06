@@ -2,16 +2,17 @@ import { Navigate, createBrowserRouter } from 'react-router-dom';
 import App from './App';
 import OrderDetailPage from './pages/OrderDetailPage';
 import OrdersListPage from './pages/OrdersListPage';
+import OverviewPage from './pages/OverviewPage';
 
 const routes = [
   {
     path: '/',
     element: <App />,
     children: [
-      { index: true, element: <Navigate to="/orders" replace /> },
+      { index: true, element: <OverviewPage /> },
       { path: 'orders', element: <OrdersListPage /> },
       { path: 'orders/:id', element: <OrderDetailPage /> },
-      { path: '*', element: <Navigate to="/orders" replace /> }
+      { path: '*', element: <Navigate to="/" replace /> }
     ]
   }
 ];

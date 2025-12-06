@@ -5,7 +5,7 @@ import type {
   DashboardVehicle
 } from "../types/dashboard";
 
-export function mapOrderRowToDashboardOrder(row: any, vehicleRow?: any): DashboardOrder {
+export function mapOrderRowToDashboardOrder(row: any, vehicleRow?: any | null): DashboardOrder {
   console.log("[DashboardMapper] mapOrderRowToDashboardOrder input row:", {
     id: row?.id,
     hasVehicle: !!vehicleRow
@@ -24,17 +24,18 @@ export function mapOrderRowToDashboardOrder(row: any, vehicleRow?: any): Dashboa
       }
     : null;
 
-  const vehicle: DashboardVehicle | null = vehicleRow
-    ? {
-        vin: vehicleRow.vin ?? null,
-        hsn: vehicleRow.hsn ?? null,
-        tsn: vehicleRow.tsn ?? null,
-        make: vehicleRow.make ?? null,
-        model: vehicleRow.model ?? null,
-        year: vehicleRow.year != null ? Number(vehicleRow.year) : null,
-        engine: vehicleRow.engine ?? vehicleRow.engine_code ?? null
-      }
-    : null;
+  const vehicle: DashboardVehicle | null =
+    vehicleRow && typeof vehicleRow === "object"
+      ? {
+          vin: vehicleRow.vin ?? null,
+          hsn: vehicleRow.hsn ?? null,
+          tsn: vehicleRow.tsn ?? null,
+          make: vehicleRow.make ?? null,
+          model: vehicleRow.model ?? null,
+          year: vehicleRow.year != null ? Number(vehicleRow.year) : null,
+          engine: vehicleRow.engine ?? vehicleRow.engine_code ?? null
+        }
+      : null;
 
   const mapped: DashboardOrder = {
     id: row.id,

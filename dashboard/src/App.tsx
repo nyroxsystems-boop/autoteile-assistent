@@ -1,25 +1,29 @@
 import { useEffect, type CSSProperties } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
-const navItems = [{ path: '/orders', label: 'Orders' }];
+const navItems = [
+  { path: '/', label: 'Übersicht' },
+  { path: '/orders', label: 'Bestellungen' }
+];
 
 const App = () => {
   const location = useLocation();
 
   useEffect(() => {
-    console.log('[App] Mounted dashboard shell');
-    return () => console.log('[App] Unmounted dashboard shell');
+    console.log('[Layout] mounted');
+    return () => console.log('[Layout] unmounted');
   }, []);
 
   useEffect(() => {
-    console.log(`[App] Active route -> ${location.pathname}${location.search}${location.hash}`);
+    console.log('[Layout] route changed to', location.pathname);
   }, [location]);
 
   return (
-    <div style={styles.appShell}>
-      <aside style={styles.sidebar}>
-        <div style={styles.brand}>
-          <span style={styles.brandAccent}>Auto</span>teile Admin
+    <div style={styles.shell}>
+      <header style={styles.header}>
+        <div style={styles.brandBlock}>
+          <div style={styles.brandTitle}>Autoteile-Dashboard</div>
+          <p style={styles.brandSubtitle}>WhatsApp Assistent · Händleransicht</p>
         </div>
         <nav style={styles.nav}>
           {navItems.map((item) => (
@@ -30,134 +34,85 @@ const App = () => {
                 ...styles.navLink,
                 ...(isActive ? styles.navLinkActive : {})
               })}
-              onClick={() =>
-                console.log(`[App] Navigating to ${item.path} from ${location.pathname}`)
-              }
+              onClick={() => console.log('[Layout] navigation click', { to: item.path })}
             >
               {item.label}
             </NavLink>
           ))}
         </nav>
-        <div style={styles.sidebarFooter}>
-          <div style={styles.badge}>v0.0.1</div>
-          <div>Orders assistant dashboard</div>
-        </div>
-      </aside>
+      </header>
 
-      <div style={styles.mainContent}>
-        <header style={styles.header}>
-          <div>
-            <p style={styles.eyebrow}>Autoteile Orders</p>
-            <h1 style={styles.pageTitle}>Dashboard</h1>
-          </div>
-          <div style={styles.activeRoute}>Current route: {location.pathname}</div>
-        </header>
-        <section style={styles.contentArea}>
+      <main style={styles.main}>
+        <div style={styles.pageWrapper}>
           <Outlet />
-        </section>
-      </div>
+        </div>
+      </main>
     </div>
   );
 };
 
 const styles: Record<string, CSSProperties> = {
-  appShell: {
-    display: 'grid',
-    gridTemplateColumns: '240px 1fr',
+  shell: {
     minHeight: '100vh',
-    backgroundColor: '#eef2f7'
-  },
-  sidebar: {
+    backgroundColor: '#f6f8fb',
     display: 'flex',
     flexDirection: 'column',
-    gap: 24,
-    padding: '24px 20px',
-    backgroundColor: '#0f172a',
-    color: '#e2e8f0'
-  },
-  brand: {
-    fontSize: 20,
-    fontWeight: 700,
-    letterSpacing: 0.2
-  },
-  brandAccent: {
-    color: '#a5b4fc'
-  },
-  nav: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-    marginTop: 8
-  },
-  navLink: {
-    padding: '10px 12px',
-    borderRadius: 8,
-    color: '#cbd5e1',
-    fontWeight: 600,
-    border: '1px solid transparent',
-    transition: 'all 0.15s ease-in-out'
-  },
-  navLinkActive: {
-    backgroundColor: '#1e293b',
-    color: '#f8fafc',
-    borderColor: '#334155'
-  },
-  sidebarFooter: {
-    marginTop: 'auto',
-    fontSize: 12,
-    color: '#94a3b8',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6
-  },
-  badge: {
-    backgroundColor: '#1e293b',
-    color: '#cbd5e1',
-    padding: '6px 8px',
-    borderRadius: 6,
-    width: 'fit-content',
-    fontWeight: 700,
-    fontSize: 12
-  },
-  mainContent: {
-    display: 'flex',
-    flexDirection: 'column',
-    padding: '28px 32px',
-    gap: 20
+    gap: 16
   },
   header: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12
+    padding: '18px 28px',
+    backgroundColor: '#0f172a',
+    color: '#e2e8f0',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.12)'
   },
-  eyebrow: {
+  brandBlock: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4
+  },
+  brandTitle: {
+    fontSize: 20,
+    fontWeight: 800,
+    letterSpacing: 0.3
+  },
+  brandSubtitle: {
     margin: 0,
-    textTransform: 'uppercase',
-    fontSize: 12,
-    letterSpacing: 1.2,
-    color: '#475569'
+    color: '#cbd5e1',
+    fontSize: 13
   },
-  pageTitle: {
-    margin: '4px 0 0',
-    fontSize: 28,
-    color: '#0f172a'
+  nav: {
+    display: 'flex',
+    gap: 10
   },
-  activeRoute: {
-    padding: '8px 12px',
-    borderRadius: 8,
-    backgroundColor: '#e2e8f0',
-    color: '#1e293b',
-    fontWeight: 600,
-    fontSize: 14,
-    border: '1px solid #cbd5e1'
+  navLink: {
+    padding: '10px 14px',
+    borderRadius: 10,
+    color: '#e2e8f0',
+    textDecoration: 'none',
+    border: '1px solid transparent',
+    fontWeight: 700,
+    letterSpacing: 0.2,
+    transition: 'all 0.15s ease'
   },
-  contentArea: {
+  navLinkActive: {
+    backgroundColor: '#1d4ed8',
+    borderColor: '#3b82f6',
+    color: '#ffffff',
+    boxShadow: '0 8px 18px rgba(59,130,246,0.35)'
+  },
+  main: {
+    flex: 1,
+    padding: '20px 28px'
+  },
+  pageWrapper: {
     backgroundColor: '#ffffff',
     borderRadius: 14,
-    padding: '24px',
-    boxShadow: '0 12px 40px rgba(15, 23, 42, 0.08)',
-    border: '1px solid #e2e8f0'
+    border: '1px solid #e2e8f0',
+    padding: 24,
+    boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)'
   }
 };
 
