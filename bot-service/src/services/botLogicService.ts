@@ -318,15 +318,23 @@ export async function handleIncomingBotMessage(
     }
 
     // 2. Eingehende Nachricht speichern
-    await insertMessage({
-      orderId: order.id,
-      direction: "incoming",
-      channel: "whatsapp",
-      fromIdentifier: from,
-      toIdentifier: null,
-      content: text,
-      rawPayload: { simulated: true }
-    });
+    try {
+      await insertMessage({
+        orderId: order.id,
+        direction: "incoming",
+        channel: "whatsapp",
+        fromIdentifier: from,
+        toIdentifier: null,
+        content: text,
+        rawPayload: { simulated: true }
+      });
+    } catch (dbErr: any) {
+      logger.error("Failed to store incoming bot message", {
+        error: dbErr?.message,
+        orderId: order.id
+      });
+      // Continue flow even if logging fails
+    }
 
     const orderData = order.orderData || {};
     let stage: string | null = orderData.stage || null;
