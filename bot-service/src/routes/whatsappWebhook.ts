@@ -1,10 +1,42 @@
+import crypto from "crypto";
 import express from "express";
 import fetch from "node-fetch";
+import { env } from "../config/env";
 
 const router = express.Router();
 
 // Twilio posts application/x-www-form-urlencoded bodies
 router.use(express.urlencoded({ extended: false }));
+
+function validateTwilioSignature(req: express.Request): boolean {
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!authToken) {
+    console.error("[Twilio Webhook] Missing TWILIO_AUTH_TOKEN for signature validation");
+    return false;
+  }
+
+  const signature = (req.headers["x-twilio-signature"] as string) || "";
+  if (!signature) {
+    console.error("[Twilio Webhook] Missing X-Twilio-Signature header");
+    return false;
+  }
+
+  const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+  const params = req.body || {};
+  const sortedKeys = Object.keys(params).sort();
+  let data = url;
+  for (const key of sortedKeys) {
+    data += key + params[key];
+  }
+
+  const expected = crypto.createHmac("sha1", authToken).update(data).digest("base64");
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  } catch {
+    return false;
+  }
+}
 
 function xmlEscape(str: string): string {
   return String(str)
@@ -16,25 +48,51 @@ function xmlEscape(str: string): string {
 }
 
 router.post("/", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    const twimlReject = `<Response><Message>${xmlEscape(
+      "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut."
+    )}</Message></Response>`;
+    return res.type("text/xml").status(401).send(twimlReject);
+  }
+
   const from = (req.body?.From as string) || "";
   const text = (req.body?.Body as string) || "";
-  const numMedia = (req.body?.NumMedia as string) || "0";
+  const numMediaStr = (req.body?.NumMedia as string) || "0";
+  const numMedia = parseInt(numMediaStr, 10) || 0;
+
+  const mediaUrls: string[] = [];
+  if (numMedia > 0) {
+    for (let i = 0; i < numMedia; i++) {
+      const url = req.body?.[`MediaUrl${i}`] as string | undefined;
+      if (url) mediaUrls.push(url);
+    }
+  }
 
   // Log incoming Twilio webhook payload
-  console.log("[Twilio Webhook] Incoming", { from, text, numMedia });
+  console.log("[Twilio Webhook] Incoming", { from, text, numMedia, mediaUrls });
+
+  if (mediaUrls.length > 0) {
+    console.log("[Twilio Webhook] Incoming mediaUrls:", mediaUrls);
+  }
 
   let replyText =
     "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
 
   try {
+    const botPayload = {
+      from,
+      text: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
+      orderId: null,
+      mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined
+    };
+
     const botResponse = await fetch("https://autoteile-bot-service.onrender.com/bot/message", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from,
-        text,
-        orderId: null
-      })
+      headers: {
+        "Content-Type": "application/json",
+        ...(env.botApiSecret ? { "x-bot-secret": env.botApiSecret } : {})
+      },
+      body: JSON.stringify(botPayload)
     });
 
     if (!botResponse.ok) {
@@ -45,6 +103,7 @@ router.post("/", async (req, res) => {
     replyText = data.reply || replyText;
   } catch (err: any) {
     console.error("[Twilio Webhook] Error calling bot/message", { error: err?.message });
+    replyText = `${replyText} / A technical error occurred. Please try again later.`;
   }
 
   const twiml = `<Response><Message>${xmlEscape(replyText)}</Message></Response>`;

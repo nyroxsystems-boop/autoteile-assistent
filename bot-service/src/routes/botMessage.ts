@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { handleIncomingBotMessage } from "../services/botLogicService";
 import { insertMessage } from "../services/supabaseService";
+import { env } from "../config/env";
 
 const router = Router();
 
@@ -16,6 +17,13 @@ const router = Router();
  * - Antwort generieren
  */
 router.post("/", async (req: Request, res: Response) => {
+  if (env.botApiSecret) {
+    const provided = req.header("x-bot-secret");
+    if (provided !== env.botApiSecret) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+  }
+
   const { from, text, orderId } = req.body ?? {};
 
   if (!from || !text) {

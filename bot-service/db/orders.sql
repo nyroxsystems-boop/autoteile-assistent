@@ -13,13 +13,20 @@ create table if not exists public.orders (
   updated_at timestamptz not null default now(),
 
   customer_name text,
-  customer_contact text,         -- z.B. WhatsApp-Nummer oder Name
-  vehicle_id uuid,               -- spätere Verknüpfung zu einer vehicles-Tabelle
+  customer_contact text,             -- z.B. WhatsApp-Nummer oder Name
+  vehicle_id uuid,                   -- spätere Verknüpfung zu einer vehicles-Tabelle
 
-  requested_part_name text not null,  -- z.B. "Bremssattel vorne links"
-  oem_number text,                    -- erkannte OEM-Nummer
-  status text not null default 'new', -- Status: new, processing, ready, ordered, failed
-  match_confidence numeric            -- 0–1, wie sicher ist das Matching
+  requested_part_name text not null, -- z.B. "Bremssattel vorne links"
+  oem_number text,                   -- erkannte OEM-Nummer
+  status text not null default 'choose_language', -- Conversation/Order-Status
+  match_confidence numeric,          -- 0–1, wie sicher ist das Matching
+
+  -- Dialog-/Kontext-Daten
+  language text,
+  order_data jsonb default null,
+  vehicle_description text,
+  part_description text,
+  vehicle_document_image_url text
 );
 
 -- Trigger-Funktion, um updated_at automatisch zu setzen

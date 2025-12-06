@@ -404,6 +404,28 @@ export interface BotMessagePayload {
   from: string;
   text: string;
   orderId?: string | null;
+  mediaUrls?: string[];
+}
+
+// In-memory per-sender lock to reduce race conditions on concurrent messages.
+const conversationLocks = new Map<string, Promise<void>>();
+
+async function withConversationLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = conversationLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((res) => {
+    release = res;
+  });
+  conversationLocks.set(key, prev.then(() => current));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (conversationLocks.get(key) === current) {
+      conversationLocks.delete(key);
+    }
+  }
 }
 
 // Helper: detect explicit language choice in the language selection step
@@ -422,17 +444,32 @@ function hasVehicleHints(text: string): boolean {
   return brands.some((b) => t.includes(b)) || yearPattern.test(t);
 }
 
+// Sanitizes free text to avoid control chars and overly long inputs.
+function sanitizeText(input: string, maxLen = 500): string {
+  if (!input) return "";
+  const trimmed = input.trim().slice(0, maxLen);
+  return trimmed.replace(/[\u0000-\u001F\u007F]/g, " ");
+}
+
 // ------------------------------
 // Hauptlogik – zustandsbasierter Flow
 // ------------------------------
 export async function handleIncomingBotMessage(
   payload: BotMessagePayload
 ): Promise<{ reply: string; orderId: string }> {
-  const userText = (payload.text || "").trim();
+  return withConversationLock(payload.from, async () => {
+  const rawText = payload.text || "";
+  const userText = sanitizeText(rawText, 1000); // basic length guard for rate-limiting risk
   const textLower = userText.toLowerCase();
   const noDocKeywords = ["kein fahrzeugschein", "nicht dabei", "no registration", "don't have it", "keinen schein", "kein schein"];
   const userHasNoDoc = noDocKeywords.some((k) => textLower.includes(k));
   const vehicleLooksProvided = hasVehicleHints(userText);
+  const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
+
+  const vehicleImageNote =
+    hasVehicleImage && payload.mediaUrls
+      ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
+      : null;
 
   // Load or create order
   const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
@@ -453,7 +490,7 @@ export async function handleIncomingBotMessage(
       fromIdentifier: payload.from,
       toIdentifier: null,
       content: userText,
-      rawPayload: { from: payload.from }
+      rawPayload: { from: payload.from, mediaUrls: payload.mediaUrls || [] }
     });
   } catch (err: any) {
     logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
@@ -476,7 +513,11 @@ export async function handleIncomingBotMessage(
       break;
     }
     case "wait_vehicle_docs": {
-      if (userHasNoDoc || vehicleLooksProvided) {
+      if (hasVehicleImage) {
+        const note = vehicleImageNote || "";
+        vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
+        nextStatus = "ask_part_info";
+      } else if (userHasNoDoc || vehicleLooksProvided) {
         vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${userText}` : userText;
         nextStatus = "ask_part_info";
       } else if (!vehicleDescription) {
@@ -493,7 +534,7 @@ export async function handleIncomingBotMessage(
     }
     case "wait_part_info": {
       partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
-      nextStatus = "processing";
+      nextStatus = "done";
       break;
     }
     default: {
@@ -516,13 +557,25 @@ Backend perspective:
 - Part description (so far): ${partDescription ?? "none yet"}
 - User explicitly has registration document: ${userHasNoDoc ? "NO" : "UNKNOWN"}
 - User text looks like vehicle info (make/model/year): ${vehicleLooksProvided ? "YES" : "NO"}
+- User has sent vehicle document image: ${hasVehicleImage ? "YES" : "NO"}
+- Missing info: ${
+  currentStatus === "wait_vehicle_docs" && !vehicleDescription && !hasVehicleImage
+    ? "vehicle document OR make/model/year"
+    : currentStatus === "wait_part_info" && !partDescription
+    ? "part details (what part, position front/rear left/right, symptoms)"
+    : "n/a"
+}
 
 User message: "${payload.text}"
+Media URLs: ${(payload.mediaUrls ?? []).join(", ")}
 
 Instructions for you:
 - Stay within the current step and the backend's nextState.
 - If vehicle_description is already present, do NOT ask again for the registration document.
 - If userHasNoDoc = NO, focus on make/model/year and other textual identifiers.
+- If hasVehicleImage = YES, assume we have the registration document and proceed to ask about the needed part.
+- Keep responses concise; do not generate overly long messages.
+- If the user sends excessive text, politely ask for key points only; keep the reply short.
 `;
 
   let replyText = "";
@@ -586,4 +639,5 @@ Instructions for you:
   }
 
   return { reply: replyText, orderId: order.id };
+  });
 }
