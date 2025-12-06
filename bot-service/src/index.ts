@@ -12,6 +12,7 @@ import orderAutoSelectRouter from "./routes/orderAutoSelect";
 import orderAutoOrderRouter from "./routes/orderAutoOrder";
 import whatsappWebhookRouter from "./routes/whatsappWebhook";
 import { registerDashboardRoutes } from "./routes/dashboardRoutes";
+import { createInternalRouter } from "./routes/internalRoutes";
 
 const app = express();
 
@@ -58,6 +59,9 @@ app.use("/webhook/whatsapp", whatsappWebhookRouter);
 
 // Dashboard API
 registerDashboardRoutes(app);
+
+// Internal API
+app.use("/internal", createInternalRouter());
 
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte
