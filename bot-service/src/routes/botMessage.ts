@@ -26,15 +26,20 @@ router.post("/", async (req: Request, res: Response) => {
     const result = await handleIncomingBotMessage(orderId ?? null, from, text);
 
     // Antwort als outgoing message speichern
-    await insertMessage({
-      orderId: result.orderId,
-      direction: "outgoing",
-      channel: "whatsapp",
-      fromIdentifier: null,
-      toIdentifier: from,
-      content: result.reply,
-      rawPayload: null
-    });
+    try {
+      await insertMessage({
+        orderId: result.orderId || null,
+        direction: "outgoing",
+        channel: "whatsapp",
+        fromIdentifier: null,
+        toIdentifier: from,
+        content: result.reply,
+        rawPayload: null
+      });
+    } catch (dbErr: any) {
+      console.error("Failed to store outgoing bot message", { error: dbErr?.message, orderId: result.orderId });
+      // Do not fail the whole request if logging to DB fails
+    }
 
     res.json(result);
   } catch (err: any) {
