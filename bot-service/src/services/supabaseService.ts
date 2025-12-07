@@ -12,6 +12,16 @@ export type ConversationStatus =
   | "await_offer_confirmation"
   | "done";
 
+const ACTIVE_CONVERSATION_STATUSES: ConversationStatus[] = [
+  "choose_language",
+  "collect_vehicle",
+  "collect_part",
+  "oem_lookup",
+  "show_offers",
+  "await_offer_choice",
+  "await_offer_confirmation"
+];
+
 export interface Order {
   id: string;
   from: string;
@@ -213,11 +223,12 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
     }
   }
 
-  // 2) Letzte Order für diesen Absender laden (egal welcher Status)
+  // 2) Offene Order für diesen Absender suchen (nur aktive Status)
   const { data: rows, error: searchError } = await client
     .from("orders")
     .select("*")
     .eq("customer_contact", from)
+    .in("status", ACTIVE_CONVERSATION_STATUSES)
     .order("created_at", { ascending: false })
     .limit(1);
 
@@ -226,37 +237,11 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
     throw new Error("Failed to find or create order");
   }
 
-  const latestRow = rows && rows[0] ? rows[0] : null;
-
-  if (latestRow) {
-    const orderData = latestRow.order_data || {};
-    const convStatus = (orderData.conversationStatus as ConversationStatus | string | null) ?? null;
-    const businessStatus = (latestRow.status as string | null) ?? null;
-
-    const activeFlowStates = new Set([
-      "choose_language",
-      "collect_vehicle",
-      "collect_part",
-      "oem_lookup",
-      "show_offers",
-      "await_offer_choice",
-      "await_offer_confirmation"
-    ]);
-
-    // Treat business states that indicate backend processing or closure as non-active
-    const closedBusinessStates = new Set(["processing", "ready", "ordered", "done"]);
-    const closedConvStates = new Set(["processing", "done"]);
-
-    const isConversationFlowActive = convStatus ? activeFlowStates.has(convStatus) : false;
-    const isBusinessClosed = businessStatus ? closedBusinessStates.has(businessStatus) : false;
-    const isConversationClosedOrStuck = convStatus ? closedConvStates.has(convStatus) : false;
-
-    if (isConversationFlowActive && !isBusinessClosed && !isConversationClosedOrStuck) {
-      return mapRowToConversationOrder(latestRow);
-    }
+  if (rows && rows.length > 0) {
+    return mapRowToConversationOrder(rows[0]);
   }
 
-  // 3) Neue Order anlegen, wenn keine passende aktive gefunden wurde
+  // 3) Keine offene Order gefunden → neue anlegen
   const payload = {
     customer_contact: from,
     requested_part_name: "pending",

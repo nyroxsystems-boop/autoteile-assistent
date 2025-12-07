@@ -283,6 +283,102 @@ function mergePartInfo(existing: any, parsed: ParsedUserMessage) {
   return merged;
 }
 
+async function runOemLookupAndScraping(
+  orderId: string,
+  language: "de" | "en" | null,
+  parsed: ParsedUserMessage,
+  orderData: any,
+  partDescription: string | null
+): Promise<{ replyText: string; nextStatus: ConversationStatus }> {
+  const vehicle = await getVehicleForOrder(orderId);
+  const vehicleForOem = {
+    make: vehicle?.make ?? undefined,
+    model: vehicle?.model ?? undefined,
+    year: vehicle?.year ?? undefined,
+    engine: vehicle?.engineCode ?? undefined,
+    vin: vehicle?.vin ?? undefined,
+    hsn: vehicle?.hsn ?? undefined,
+    tsn: vehicle?.tsn ?? undefined
+  };
+
+  const missingVehicleFields = determineRequiredFields(vehicleForOem);
+  if (missingVehicleFields.length > 0) {
+    const q = buildVehicleFollowUpQuestion(missingVehicleFields, language ?? "de");
+    return {
+      replyText:
+        q ||
+        (language === "en"
+          ? "I need a bit more vehicle info."
+          : "Ich brauche noch ein paar Fahrzeugdaten."),
+      nextStatus: "collect_vehicle"
+    };
+  }
+
+  const partText =
+    parsed.part ||
+    orderData?.partText ||
+    partDescription ||
+    (language === "en" ? "the part you mentioned" : "das genannte Teil");
+
+  try {
+    const oemResult = await resolveOEM(vehicleForOem, partText);
+
+    if (oemResult.success && oemResult.oemNumber) {
+      await updateOrderOEM(orderId, {
+        oemStatus: "ok",
+        oemData: { oemNumber: oemResult.oemNumber }
+      });
+
+      try {
+        await scrapeOffersForOrder(orderId, oemResult.oemNumber);
+      } catch (err: any) {
+        logger.error("Auto-scraping failed after OEM resolution", {
+          error: err?.message,
+          orderId,
+          oemNumber: oemResult.oemNumber
+        });
+      }
+
+      logger.info("OEM lookup finished in bot flow", {
+        orderId,
+        success: oemResult.success,
+        oemNumber: oemResult.oemNumber ?? null,
+        message: oemResult.message ?? null
+      });
+
+      return {
+        replyText:
+          language === "en"
+            ? "Perfect, I’ve identified the right part for your car. I’m now checking different shops for suitable offers."
+            : "Perfekt, ich habe das passende Teil für dein Fahrzeug gefunden. Ich prüfe jetzt verschiedene Shops auf passende Angebote.",
+        nextStatus: "show_offers"
+      };
+    } else {
+      await updateOrderOEM(orderId, {
+        oemStatus: "error",
+        oemError: oemResult.message ?? "OEM konnte nicht ermittelt werden."
+      });
+
+      return {
+        replyText:
+          language === "en"
+            ? "I couldn't identify the right part yet. Could you share the engine code or more vehicle details?"
+            : "Ich konnte das passende Teil noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?",
+        nextStatus: "collect_vehicle"
+      };
+    }
+  } catch (err: any) {
+    logger.error("resolveOEM failed", { error: err?.message, orderId });
+    return {
+      replyText:
+        language === "en"
+          ? "A technical error occurred while finding the right part. Please send more vehicle info."
+          : "Beim Finden des passenden Teils ist ein technischer Fehler aufgetreten. Bitte schick mir noch ein paar Fahrzeugdaten.",
+      nextStatus: "collect_vehicle"
+    };
+  }
+}
+
 // ------------------------------
 // Schritt 1: Nutzertext analysieren (NLU via OpenAI)
 // ------------------------------
@@ -683,97 +779,35 @@ export async function handleIncomingBotMessage(
             parsed.part ||
             (partDescription || "").trim() ||
             (language === "en" ? "the part you mentioned" : "das genannte Teil");
-          nextStatus = "oem_lookup";
           logger.info("Conversation state", {
             orderId: order.id,
             prevStatus: order.status,
-            nextStatus,
+            nextStatus: "oem_lookup",
             language
           });
-          replyText =
-            language === "en"
-              ? `Great, I’ve got all part details (${partText}). I’m now checking different shops for suitable products for your car.`
-              : `Super, ich habe alle Details zum Teil (${partText}). Ich suche jetzt passende Produkte für dein Fahrzeug.`;
+          const oemFlow = await runOemLookupAndScraping(
+            order.id,
+            language ?? "de",
+            { ...parsed, part: partText },
+            orderData,
+            partDescription ?? null
+          );
+          replyText = oemFlow.replyText;
+          nextStatus = oemFlow.nextStatus;
         }
         break;
       }
 
       case "oem_lookup": {
-        const vehicle = await getVehicleForOrder(order.id);
-        const vehicleForOem = {
-          make: vehicle?.make ?? undefined,
-          model: vehicle?.model ?? undefined,
-          year: vehicle?.year ?? undefined,
-          engine: vehicle?.engineCode ?? undefined,
-          vin: vehicle?.vin ?? undefined,
-          hsn: vehicle?.hsn ?? undefined,
-          tsn: vehicle?.tsn ?? undefined
-        };
-
-        const missingVehicleFields = determineRequiredFields(vehicleForOem);
-        if (missingVehicleFields.length > 0) {
-          const q = buildVehicleFollowUpQuestion(missingVehicleFields, language ?? "de");
-          replyText = q || (language === "en" ? "I need a bit more vehicle info." : "Ich brauche noch ein paar Fahrzeugdaten.");
-          nextStatus = "collect_vehicle";
-          break;
-        }
-
-        // Teiltext auswählen
-        const partText =
-          parsed.part ||
-          (await (async () => {
-            // fallback aus order_data
-            return null;
-          })()) ||
-          partDescription ||
-          "Teil";
-
-        try {
-          const oemResult = await resolveOEM(vehicleForOem, partText);
-          if (oemResult.success && oemResult.oemNumber) {
-            await updateOrderOEM(order.id, {
-              oemStatus: "ok",
-              oemData: { oemNumber: oemResult.oemNumber }
-            });
-            try {
-              await scrapeOffersForOrder(order.id, oemResult.oemNumber);
-            } catch (err: any) {
-              logger.error("Auto-scraping failed after OEM resolution", {
-                error: err?.message,
-                orderId: order.id,
-                oemNumber: oemResult.oemNumber
-              });
-            }
-            logger.info("OEM lookup finished in bot flow", {
-              orderId: order.id,
-              success: oemResult.success,
-              oemNumber: oemResult.oemNumber ?? null,
-              message: oemResult.message ?? null
-            });
-            replyText =
-              language === "en"
-                ? "Perfect, I’ve identified the right part for your car. I’m now checking different shops for suitable offers."
-                : "Perfekt, ich habe das passende Teil für dein Fahrzeug gefunden. Ich prüfe jetzt verschiedene Shops auf passende Angebote.";
-            nextStatus = "show_offers";
-          } else {
-            await updateOrderOEM(order.id, {
-              oemStatus: "error",
-              oemError: oemResult.message ?? "OEM konnte nicht ermittelt werden."
-            });
-            replyText =
-              language === "en"
-              ? "I couldn't identify the right part yet. Could you share the engine code or more vehicle details?"
-              : "Ich konnte das passende Teil noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?";
-            nextStatus = "collect_vehicle";
-          }
-        } catch (err: any) {
-          logger.error("resolveOEM failed", { error: err?.message, orderId: order.id });
-          replyText =
-            language === "en"
-              ? "A technical error occurred while finding the right part. Please send more vehicle info."
-              : "Beim Finden des passenden Teils ist ein technischer Fehler aufgetreten. Bitte schick mir noch ein paar Fahrzeugdaten.";
-          nextStatus = "collect_vehicle";
-        }
+        const oemFlow = await runOemLookupAndScraping(
+          order.id,
+          language ?? "de",
+          parsed,
+          orderData,
+          partDescription ?? null
+        );
+        replyText = oemFlow.replyText;
+        nextStatus = oemFlow.nextStatus;
         break;
       }
 
@@ -930,12 +964,8 @@ export async function handleIncomingBotMessage(
         });
         replyText =
           language === "en"
-            ? `Got it. I’ve saved the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${chosen.price} ${
-                chosen.currency
-              }) as your choice. Your dealer can now see this in the system.`
-            : `Alles klar, ich merke für dich das Angebot von ${chosen.shopName} (${chosen.brand ?? "k.A."}, ${
-                chosen.price
-              } ${chosen.currency}). Dein Händler sieht diese Auswahl jetzt im System.`;
+            ? `Thank you! Your order (${order.id}) has been saved with the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${chosen.price} ${chosen.currency}). Your dealer can now see this in the system.`
+            : `Vielen Dank! Deine Bestellung (${order.id}) wurde mit dem Angebot von ${chosen.shopName} (${chosen.brand ?? "k.A."}, ${chosen.price} ${chosen.currency}) gespeichert. Dein Händler sieht diese Auswahl jetzt im System.`;
         nextStatus = "done";
         break;
       }
@@ -1014,8 +1044,8 @@ export async function handleIncomingBotMessage(
         });
         replyText =
           language === "en"
-            ? "Perfect, I’ve saved this offer for you. Your dealer can now see that you selected this product."
-            : "Perfekt, ich habe dieses Angebot für dich gespeichert. Dein Händler sieht jetzt, dass du dieses Produkt ausgewählt hast.";
+            ? `Perfect, I’ve saved this offer for you as order ${order.id}. Your dealer can now see that you selected this product.`
+            : `Perfekt, ich habe dieses Angebot für dich als Bestellung ${order.id} gespeichert. Dein Händler sieht jetzt, dass du dieses Produkt ausgewählt hast.`;
         nextStatus = "done";
         break;
       }
