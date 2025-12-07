@@ -390,6 +390,30 @@ async function downloadImageBuffer(url: string): Promise<Buffer> {
   return Buffer.from(arrayBuffer);
 }
 
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+
+async function downloadFromTwilio(mediaUrl: string): Promise<Buffer> {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    throw new Error("Missing Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
+  }
+  const authHeader =
+    "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+  const res = await fetch(mediaUrl, {
+    headers: {
+      Authorization: authHeader
+    }
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to download image: ${res.status} ${res.statusText}`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
 async function extractVehicleDataFromImage(imageBuffer: Buffer): Promise<{
   make?: string | null;
   model?: string | null;
@@ -759,12 +783,15 @@ export async function handleIncomingBotMessage(
         if (hasVehicleImage) {
           const note = vehicleImageNote || "";
           vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
+          let anyBufferDownloaded = false;
+          let ocrSucceeded = false;
           try {
             const buffers: Buffer[] = [];
             for (const url of payload.mediaUrls ?? []) {
               try {
-                const buf = await downloadImageBuffer(url);
+                const buf = await downloadFromTwilio(url);
                 buffers.push(buf);
+                anyBufferDownloaded = true;
               } catch (err: any) {
                 logger.error("Failed to download vehicle image", { error: err?.message, orderId: order.id });
               }
@@ -773,6 +800,7 @@ export async function handleIncomingBotMessage(
             if (buffers.length > 0) {
               const ocr = await extractVehicleDataFromImage(buffers[0]);
               logger.info("Vehicle OCR result", { orderId: order.id, ocr });
+              ocrSucceeded = true;
 
               await upsertVehicleForOrderFromPartial(order.id, {
                 make: ocr.make ?? null,
@@ -792,6 +820,15 @@ export async function handleIncomingBotMessage(
             }
           } catch (err: any) {
             logger.error("Vehicle OCR failed", { error: err?.message, orderId: order.id });
+          }
+
+          if (!anyBufferDownloaded) {
+            replyText =
+              language === "en"
+                ? "I couldn’t load your registration photo. Please type your make, model, year, and VIN/HSN/TSN."
+                : "Ich konnte dein Fahrzeugschein-Foto nicht laden. Bitte schreib mir Marke, Modell, Baujahr und VIN/HSN/TSN.";
+            nextStatus = "collect_vehicle";
+            break;
           }
 
           // Nach OCR prüfen, ob genug Daten für OEM vorhanden sind
