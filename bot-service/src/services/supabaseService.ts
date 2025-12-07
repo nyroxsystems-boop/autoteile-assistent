@@ -537,21 +537,38 @@ export async function getVehicleById(id: string): Promise<Vehicle | null> {
 export async function getVehicleForOrder(orderId: string): Promise<Vehicle | null> {
   const client = getClient();
 
-  const { data: order, error: orderError } = await client
-    .from("orders")
-    .select("vehicle_id")
-    .eq("id", orderId)
+  const { data, error } = await client
+    .from("vehicles")
+    .select("*")
+    .eq("order_id", orderId)
     .single();
 
-  if (orderError) {
-    throw new Error(`Failed to fetch order for vehicle lookup: ${orderError.message}`);
+  if (error) {
+    if (error.code === "PGRST116") {
+      return null;
+    }
+    console.error("Failed to fetch vehicle for order", { orderId, error: error.message });
+    throw new Error(`Failed to fetch vehicle for order ${orderId}: ${error.message}`);
   }
 
-  if (!order.vehicle_id) {
+  if (!data) {
     return null;
   }
 
-  return await getVehicleById(order.vehicle_id);
+  const v: Vehicle = {
+    id: data.id,
+    createdAt: data.created_at,
+    make: data.make,
+    model: data.model,
+    year: data.year ?? undefined,
+    engineCode: data.engine_code ?? undefined,
+    vin: data.vin,
+    hsn: data.hsn,
+    tsn: data.tsn,
+    rawData: data.raw_data
+  };
+
+  return v;
 }
 
 /**
@@ -614,16 +631,14 @@ export async function upsertVehicleForOrderFromPartial(
 ): Promise<Vehicle> {
   const client = getClient();
 
-  const payload: any = {
-    order_id: orderId,
-    make: partial.make ?? null,
-    model: partial.model ?? null,
-    year: partial.year ?? null,
-    engine_code: partial.engineCode ?? null,
-    vin: partial.vin ?? null,
-    hsn: partial.hsn ?? null,
-    tsn: partial.tsn ?? null
-  };
+  const payload: any = { order_id: orderId };
+  if (partial.make != null) payload.make = partial.make;
+  if (partial.model != null) payload.model = partial.model;
+  if (partial.year != null) payload.year = partial.year;
+  if (partial.engineCode != null) payload.engine_code = partial.engineCode;
+  if (partial.vin != null) payload.vin = partial.vin;
+  if (partial.hsn != null) payload.hsn = partial.hsn;
+  if (partial.tsn != null) payload.tsn = partial.tsn;
 
   const { data, error } = await client
     .from("vehicles")

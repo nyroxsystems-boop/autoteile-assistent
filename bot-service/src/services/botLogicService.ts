@@ -694,6 +694,18 @@ export async function handleIncomingBotMessage(
         }
 
         // Fahrzeugdaten speichern (kumulativ)
+        logger.info("Vehicle partial from parsed message", {
+          orderId: order.id,
+          partial: {
+            make: parsed.make ?? null,
+            model: parsed.model ?? null,
+            year: parsed.year ?? null,
+            engineCode: parsed.engine ?? null,
+            vin: parsed.vin ?? null,
+            hsn: parsed.hsn ?? null,
+            tsn: parsed.tsn ?? null
+          }
+        });
         await upsertVehicleForOrderFromPartial(order.id, {
           make: parsed.make ?? null,
           model: parsed.model ?? null,
@@ -706,6 +718,7 @@ export async function handleIncomingBotMessage(
 
         // Kumuliertes Fahrzeug aus DB holen und Pflichtfelder prüfen
         const vehicle = await getVehicleForOrder(order.id);
+        logger.info("Vehicle after upsert", { orderId: order.id, vehicle });
         const missingVehicleFields = determineRequiredFields({
           make: vehicle?.make,
           model: vehicle?.model,
