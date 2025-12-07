@@ -20,6 +20,7 @@ router.post("/:id/scrape-offers", async (req: Request, res: Response) => {
   const { oem } = req.body ?? {};
 
   try {
+    console.log("[OrderScraping] scrape-offers triggered", { orderId: id, bodyOem: oem });
     const order = await getOrderById(id);
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
@@ -40,12 +41,19 @@ router.post("/:id/scrape-offers", async (req: Request, res: Response) => {
     }
 
     if (!oemNumber) {
+      console.log("[OrderScraping] no OEM available", { orderId: id });
       return res.status(400).json({
         error: "No OEM number provided and none found on order."
       });
     }
 
+    console.log("[OrderScraping] using OEM", { orderId: id, oemNumber });
     const offers = await scrapeOffersForOrder(order.id, oemNumber);
+    console.log("[OrderScraping] scraping completed", {
+      orderId: id,
+      oemNumber,
+      offersCount: offers?.length ?? 0
+    });
 
     res.json({
       orderId: order.id,
@@ -53,7 +61,10 @@ router.post("/:id/scrape-offers", async (req: Request, res: Response) => {
       offers
     });
   } catch (error: any) {
-    console.error(`Error in POST /api/orders/${req.params.id}/scrape-offers:`, error);
+    console.error(`Error in POST /api/orders/${req.params.id}/scrape-offers:`, {
+      orderId: id,
+      error: error?.message ?? String(error)
+    });
     res.status(500).json({
       error: "Failed to scrape offers",
       details: error?.message ?? String(error)

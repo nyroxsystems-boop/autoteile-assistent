@@ -678,8 +678,8 @@ export async function handleIncomingBotMessage(
           nextStatus = "oem_lookup";
           replyText =
             language === "en"
-              ? `Great, I’ve got all part details (${partText}). I’ll determine the correct OEM number now.`
-              : `Super, ich habe alle Details zum Teil (${partText}). Ich ermittle jetzt die passende OEM-Nummer.`;
+              ? `Great, I’ve got all part details (${partText}). I’m now checking different shops for suitable products for your car.`
+              : `Super, ich habe alle Details zum Teil (${partText}). Ich suche jetzt passende Produkte für dein Fahrzeug.`;
         }
         break;
       }
@@ -723,8 +723,8 @@ export async function handleIncomingBotMessage(
             });
             replyText =
               language === "en"
-                ? `OEM number determined: ${oemResult.oemNumber}. I'll look for offers now.`
-                : `OEM-Nummer ermittelt: ${oemResult.oemNumber}. Ich schaue jetzt nach Angeboten.`;
+                ? `I found the correct part and will now check offers in the shops.`
+                : `Ich habe das passende Teil gefunden und schaue jetzt nach Angeboten.`;
             nextStatus = "show_offers";
           } else {
             await updateOrderOEM(order.id, {
@@ -733,16 +733,16 @@ export async function handleIncomingBotMessage(
             });
             replyText =
               language === "en"
-                ? "I couldn't determine the OEM number yet. Could you share engine code or more vehicle details?"
-                : "Ich konnte die OEM-Nummer noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?";
+              ? "I couldn't identify the right part yet. Could you share the engine code or more vehicle details?"
+              : "Ich konnte das passende Teil noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?";
             nextStatus = "collect_vehicle";
           }
         } catch (err: any) {
           logger.error("resolveOEM failed", { error: err?.message, orderId: order.id });
           replyText =
             language === "en"
-              ? "A technical error occurred during OEM lookup. Please send more vehicle info."
-              : "Bei der OEM-Ermittlung ist ein technischer Fehler aufgetreten. Bitte schick mir noch ein paar Fahrzeugdaten.";
+              ? "A technical error occurred while finding the right part. Please send more vehicle info."
+              : "Beim Finden des passenden Teils ist ein technischer Fehler aufgetreten. Bitte schick mir noch ein paar Fahrzeugdaten.";
           nextStatus = "collect_vehicle";
         }
         break;
