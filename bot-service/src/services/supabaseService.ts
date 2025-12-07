@@ -614,91 +614,49 @@ export async function upsertVehicleForOrderFromPartial(
 ): Promise<Vehicle> {
   const client = getClient();
 
-  // Hole Order + vehicle_id
-  const { data: orderRow, error: orderError } = await client
-    .from("orders")
-    .select("vehicle_id")
-    .eq("id", orderId)
-    .single();
+  const payload: any = {
+    order_id: orderId,
+    make: partial.make ?? null,
+    model: partial.model ?? null,
+    year: partial.year ?? null,
+    engine_code: partial.engineCode ?? null,
+    vin: partial.vin ?? null,
+    hsn: partial.hsn ?? null,
+    tsn: partial.tsn ?? null
+  };
 
-  if (orderError) {
-    throw new Error(`Failed to fetch order for vehicle upsert: ${orderError.message}`);
+  const { data, error } = await client
+    .from("vehicles")
+    .upsert(payload, { onConflict: "order_id" })
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to insert vehicle: ${error.message}`);
   }
 
-  if (!orderRow.vehicle_id) {
-    // Neues Vehicle anlegen
-    const { data, error } = await client
-      .from("vehicles")
-      .insert({
-        make: partial.make ?? null,
-        model: partial.model ?? null,
-        year: partial.year ?? null,
-        engine_code: partial.engineCode ?? null,
-        vin: partial.vin ?? null,
-        hsn: partial.hsn ?? null,
-        tsn: partial.tsn ?? null,
-        raw_data: null
-      })
-      .select("*")
-      .single();
+  if (!data) {
+    throw new Error("Failed to insert vehicle: no data returned");
+  }
 
-    if (error) {
-      throw new Error(`Failed to insert vehicle: ${error.message}`);
-    }
-
+  // Ensure order.vehicle_id is set to the vehicle row
+  try {
     await setOrderVehicleId(orderId, data.id);
-
-    const v: Vehicle = {
-      id: data.id,
-      createdAt: data.created_at,
-      make: data.make,
-      model: data.model,
-      year: data.year ?? undefined,
-      engineCode: data.engine_code ?? undefined,
-      vin: data.vin,
-      hsn: data.hsn,
-      tsn: data.tsn,
-      rawData: data.raw_data
-    };
-
-    return v;
-  }
-
-  // Vehicle existiert → zusammenführen und updaten
-  const { data: existingVehicle, error: vehicleError } = await client
-    .from("vehicles")
-    .select("*")
-    .eq("id", orderRow.vehicle_id)
-    .single();
-
-  if (vehicleError) {
-    throw new Error(`Failed to fetch existing vehicle: ${vehicleError.message}`);
-  }
-
-  const merged = mergeVehicleData(existingVehicle, partial);
-
-  const { data: updated, error: updateError } = await client
-    .from("vehicles")
-    .update(merged)
-    .eq("id", orderRow.vehicle_id)
-    .select("*")
-    .single();
-
-  if (updateError) {
-    throw new Error(`Failed to update vehicle: ${updateError.message}`);
+  } catch (err: any) {
+    console.error("Failed to link vehicle to order", { error: err?.message, orderId, vehicleId: data.id });
   }
 
   const v: Vehicle = {
-    id: updated.id,
-    createdAt: updated.created_at,
-    make: updated.make,
-    model: updated.model,
-    year: updated.year ?? undefined,
-    engineCode: updated.engine_code ?? undefined,
-    vin: updated.vin,
-    hsn: updated.hsn,
-    tsn: updated.tsn,
-    rawData: updated.raw_data
+    id: data.id,
+    createdAt: data.created_at,
+    make: data.make,
+    model: data.model,
+    year: data.year ?? undefined,
+    engineCode: data.engine_code ?? undefined,
+    vin: data.vin,
+    hsn: data.hsn,
+    tsn: data.tsn,
+    rawData: data.raw_data
   };
 
   return v;
