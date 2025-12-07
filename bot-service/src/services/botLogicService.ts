@@ -9,12 +9,13 @@ import {
   getVehicleForOrder,
   updateOrderOEM,
   listShopOffersByOrderId,
-  getOrderById
+  getOrderById,
+  updateOrderStatus
 } from "./supabaseService";
 import { determineRequiredFields } from "./oemRequiredFieldsService";
 import { resolveOEM } from "./oemService";
-import { selectBestOffer } from "./orderLogicService";
 import { logger } from "../utils/logger";
+import { scrapeOffersForOrder } from "./scrapingService";
 
 // KI-Client für NLU
 const client = new OpenAI({
@@ -721,10 +722,19 @@ export async function handleIncomingBotMessage(
               oemStatus: "ok",
               oemData: { oemNumber: oemResult.oemNumber }
             });
+            try {
+              await scrapeOffersForOrder(order.id, oemResult.oemNumber);
+            } catch (err: any) {
+              logger.error("Auto-scraping failed after OEM resolution", {
+                error: err?.message,
+                orderId: order.id,
+                oemNumber: oemResult.oemNumber
+              });
+            }
             replyText =
               language === "en"
-                ? `I found the correct part and will now check offers in the shops.`
-                : `Ich habe das passende Teil gefunden und schaue jetzt nach Angeboten.`;
+                ? "Perfect, I’ve identified the right part for your car. I’m now checking different shops for suitable offers."
+                : "Perfekt, ich habe das passende Teil für dein Fahrzeug gefunden. Ich prüfe jetzt verschiedene Shops auf passende Angebote.";
             nextStatus = "show_offers";
           } else {
             await updateOrderOEM(order.id, {
@@ -751,32 +761,77 @@ export async function handleIncomingBotMessage(
       case "show_offers": {
         try {
           const offers = await listShopOffersByOrderId(order.id);
-          if (!offers || offers.length === 0) {
+          const sorted = (offers ?? []).slice().sort((a, b) => {
+            const pa = a.price ?? Number.POSITIVE_INFINITY;
+            const pb = b.price ?? Number.POSITIVE_INFINITY;
+            return pa - pb;
+          });
+
+          if (!sorted || sorted.length === 0) {
             replyText =
               language === "en"
-                ? "I'm fetching offers for you now. You'll get an update shortly."
-                : "Ich hole gerade Angebote für dich. Du bekommst gleich ein Update.";
+                ? "I’m still collecting offers for you. You’ll get a selection shortly."
+                : "Ich suche noch passende Angebote. Du bekommst gleich eine Auswahl.";
             nextStatus = "show_offers";
-          } else {
-            const best = selectBestOffer(offers);
-            if (best) {
-              replyText =
-                language === "en"
-                  ? `Best offer: ${best.brand ?? "n/a"} at ${best.shopName}, ${best.price} ${best.currency}. Delivery: ${
-                      best.deliveryTimeDays ?? "n/a"
-                    } days.`
-                  : `Bestes Angebot: ${best.brand ?? "k.A."} bei ${best.shopName}, ${best.price} ${best.currency}. Lieferung: ${
-                      best.deliveryTimeDays ?? "k.A."
-                    } Tage.`;
-            } else {
-              replyText =
-                language === "en"
-                  ? "Offers found, but no best offer determined."
-                  : "Angebote gefunden, aber kein bestes Angebot ermittelt.";
-            }
-            // Wir wechseln auf done, damit die Anfrage abgeschlossen ist.
-            nextStatus = "done";
+            break;
           }
+
+          if (sorted.length === 1) {
+            const offer = sorted[0];
+            const delivery = offer.deliveryTimeDays ?? (language === "en" ? "n/a" : "k.A.");
+            replyText =
+              language === "en"
+                ? `I’ve found a suitable offer:\n\nBrand: ${offer.brand ?? "n/a"}\nShop: ${offer.shopName}\nPrice: ${offer.price} ${offer.currency}\nDelivery time: ${delivery} days.\n\nIf this works for you, please reply with "Yes" or "OK".`
+                : `Ich habe ein passendes Angebot gefunden:\n\nMarke: ${offer.brand ?? "unbekannt"}\nShop: ${offer.shopName}\nPreis: ${offer.price} ${offer.currency}\nLieferzeit: ${delivery} Tage.\n\nWenn das für dich passt, antworte bitte mit "Ja" oder "OK".`;
+
+            try {
+              await updateOrderData(order.id, {
+                selectedOfferCandidateId: offer.id
+              });
+              orderData = { ...orderData, selectedOfferCandidateId: offer.id };
+            } catch (err: any) {
+              logger.error("Failed to store selectedOfferCandidateId", { error: err?.message, orderId: order.id });
+            }
+
+            nextStatus = "await_offer_confirmation";
+            break;
+          }
+
+          const top = sorted.slice(0, 3);
+          const lines =
+            language === "en"
+              ? top.map(
+                  (o, idx) =>
+                    `${idx + 1}) ${o.brand ?? "n/a"} at ${o.shopName}, ${o.price} ${o.currency}, delivery about ${
+                      o.deliveryTimeDays ?? "n/a"
+                    } days`
+                )
+              : top.map(
+                  (o, idx) =>
+                    `${idx + 1}) ${o.brand ?? "k.A."} bei ${o.shopName}, ${o.price} ${o.currency}, Lieferung ca. ${
+                      o.deliveryTimeDays ?? "k.A."
+                    } Tage`
+                );
+
+          replyText =
+            language === "en"
+              ? "I found some offers. Please choose one:\n\n" +
+                lines.join("\n") +
+                "\n\nReply with 1, 2 or 3."
+              : "Ich habe passende Angebote gefunden. Bitte wähle eines:\n\n" +
+                lines.join("\n") +
+                "\n\nAntworte einfach mit 1, 2 oder 3.";
+
+          try {
+            await updateOrderData(order.id, {
+              offerChoiceIds: top.map((o) => o.id)
+            });
+            orderData = { ...orderData, offerChoiceIds: top.map((o) => o.id) };
+          } catch (err: any) {
+            logger.error("Failed to store offerChoiceIds", { error: err?.message, orderId: order.id });
+          }
+
+          nextStatus = "await_offer_choice";
         } catch (err: any) {
           logger.error("Fetching offers failed", { error: err?.message, orderId: order.id });
           replyText =
@@ -785,6 +840,131 @@ export async function handleIncomingBotMessage(
               : "Ich konnte gerade keine Angebote abrufen. Ich melde mich bald erneut.";
           nextStatus = "show_offers";
         }
+        break;
+      }
+
+      case "await_offer_choice": {
+        const t = (userText || "").trim().toLowerCase();
+        let choiceIndex: number | null = null;
+        if (t.includes("1")) choiceIndex = 0;
+        else if (t.includes("2")) choiceIndex = 1;
+        else if (t.includes("3")) choiceIndex = 2;
+
+        const choiceIds: string[] | undefined = orderData?.offerChoiceIds;
+        if (choiceIndex === null || !choiceIds || choiceIndex < 0 || choiceIndex >= choiceIds.length) {
+          replyText =
+            language === "en"
+              ? 'Please reply with 1, 2 or 3 to pick one of the offers.'
+              : 'Bitte antworte mit 1, 2 oder 3, um ein Angebot auszuwählen.';
+          nextStatus = "await_offer_choice";
+          break;
+        }
+
+        const chosenOfferId = choiceIds[choiceIndex];
+        const offers = await listShopOffersByOrderId(order.id);
+        const chosen = offers.find((o) => o.id === chosenOfferId);
+        if (!chosen) {
+          replyText =
+            language === "en"
+              ? "I couldn’t match your choice. I’ll show the offers again."
+              : "Ich konnte deine Auswahl nicht zuordnen. Ich zeige dir die Angebote gleich erneut.";
+          nextStatus = "show_offers";
+          break;
+        }
+
+        try {
+          await updateOrderData(order.id, {
+            selectedOfferId: chosen.id,
+            selectedOfferSummary: {
+              shopName: chosen.shopName,
+              brand: chosen.brand,
+              price: chosen.price,
+              currency: chosen.currency,
+              deliveryTimeDays: chosen.deliveryTimeDays
+            }
+          });
+          await updateOrderStatus(order.id, "ready");
+        } catch (err: any) {
+          logger.error("Failed to store selected offer", { error: err?.message, orderId: order.id, chosenOfferId });
+        }
+
+        replyText =
+          language === "en"
+            ? `Got it. I’ve saved the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${chosen.price} ${
+                chosen.currency
+              }) as your choice. Your dealer can now see this in the system.`
+            : `Alles klar, ich merke für dich das Angebot von ${chosen.shopName} (${chosen.brand ?? "k.A."}, ${
+                chosen.price
+              } ${chosen.currency}). Dein Händler sieht diese Auswahl jetzt im System.`;
+        nextStatus = "done";
+        break;
+      }
+
+      case "await_offer_confirmation": {
+        const t = (userText || "").trim().toLowerCase();
+        const isYes = ["ja", "okay", "ok", "passt", "yes", "yep", "okey"].some((w) => t.includes(w));
+        const isNo = ["nein", "no", "nicht", "anders"].some((w) => t.includes(w));
+        const candidateId = orderData?.selectedOfferCandidateId as string | undefined;
+
+        if (!isYes && !isNo) {
+          replyText =
+            language === "en"
+              ? 'If this offer works for you, please reply with "Yes" or "OK". If not, tell me what matters most (price, brand, delivery time).'
+              : 'Wenn das Angebot für dich passt, antworte bitte mit "Ja" oder "OK". Wenn nicht, sag mir kurz, was dir wichtig ist (z.B. Preis, Marke oder Lieferzeit).';
+          nextStatus = "await_offer_confirmation";
+          break;
+        }
+
+        if (isNo) {
+          replyText =
+            language === "en"
+              ? "Got it, I’ll see if I can find alternative offers. Tell me what matters most: price, brand or delivery time."
+              : "Alles klar, ich schaue, ob ich dir noch andere Angebote finden kann. Sag mir gerne, was dir wichtiger ist: Preis, Marke oder Lieferzeit.";
+          nextStatus = "show_offers";
+          break;
+        }
+
+        if (!candidateId) {
+          replyText =
+            language === "en"
+              ? "I lost track of the offer. I’ll fetch the options again."
+              : "Ich habe das Angebot nicht mehr parat. Ich hole die Optionen nochmal.";
+          nextStatus = "show_offers";
+          break;
+        }
+
+        const offers = await listShopOffersByOrderId(order.id);
+        const chosen = offers.find((o) => o.id === candidateId);
+        if (!chosen) {
+          replyText =
+            language === "en"
+              ? "I couldn’t find that offer anymore. I’ll show available offers again."
+              : "Ich konnte dieses Angebot nicht mehr finden. Ich zeige dir die verfügbaren Angebote erneut.";
+          nextStatus = "show_offers";
+          break;
+        }
+
+        try {
+          await updateOrderData(order.id, {
+            selectedOfferId: chosen.id,
+            selectedOfferSummary: {
+              shopName: chosen.shopName,
+              brand: chosen.brand,
+              price: chosen.price,
+              currency: chosen.currency,
+              deliveryTimeDays: chosen.deliveryTimeDays
+            }
+          });
+          await updateOrderStatus(order.id, "ready");
+        } catch (err: any) {
+          logger.error("Failed to store confirmed offer", { error: err?.message, orderId: order.id, candidateId });
+        }
+
+        replyText =
+          language === "en"
+            ? "Perfect, I’ve saved this offer for you. Your dealer can now see that you selected this product."
+            : "Perfekt, ich habe dieses Angebot für dich gespeichert. Dein Händler sieht jetzt, dass du dieses Produkt ausgewählt hast.";
+        nextStatus = "done";
         break;
       }
 

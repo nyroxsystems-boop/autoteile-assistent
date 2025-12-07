@@ -8,6 +8,8 @@ export type ConversationStatus =
   | "collect_part"
   | "oem_lookup"
   | "show_offers"
+  | "await_offer_choice"
+  | "await_offer_confirmation"
   | "done";
 
 export interface Order {
@@ -233,18 +235,17 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
 
     const activeFlowStates = new Set([
       "choose_language",
-      "ask_language",
-      "ask_vehicle_docs",
-      "wait_vehicle_docs",
-      "ask_part_info",
-      "wait_part_info",
       "collect_vehicle",
-      "collect_part"
+      "collect_part",
+      "oem_lookup",
+      "show_offers",
+      "await_offer_choice",
+      "await_offer_confirmation"
     ]);
 
     // Treat business states that indicate backend processing or closure as non-active
     const closedBusinessStates = new Set(["processing", "ready", "ordered", "done"]);
-    const closedConvStates = new Set(["processing", "show_offers", "done"]);
+    const closedConvStates = new Set(["processing", "done"]);
 
     const isConversationFlowActive = convStatus ? activeFlowStates.has(convStatus) : false;
     const isBusinessClosed = businessStatus ? closedBusinessStates.has(businessStatus) : false;
