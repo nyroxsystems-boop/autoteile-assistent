@@ -458,6 +458,12 @@ export async function handleIncomingBotMessage(
 
     // Order laden oder erstellen
     const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
+    logger.info("BotFlow start", {
+      from: payload.from,
+      orderId: order.id,
+      text: userText,
+      status: order.status
+    });
     let language: "de" | "en" | null = order.language ?? null;
     let languageChanged = false;
 
@@ -469,6 +475,7 @@ export async function handleIncomingBotMessage(
         languageChanged = true;
         try {
           await updateOrder(order.id, { language });
+          logger.info("Language detected and stored", { orderId: order.id, language });
         } catch (err: any) {
           logger.error("Failed to persist detected language", { error: err?.message, orderId: order.id });
         }
@@ -677,6 +684,12 @@ export async function handleIncomingBotMessage(
             (partDescription || "").trim() ||
             (language === "en" ? "the part you mentioned" : "das genannte Teil");
           nextStatus = "oem_lookup";
+          logger.info("Conversation state", {
+            orderId: order.id,
+            prevStatus: order.status,
+            nextStatus,
+            language
+          });
           replyText =
             language === "en"
               ? `Great, I’ve got all part details (${partText}). I’m now checking different shops for suitable products for your car.`
@@ -731,6 +744,12 @@ export async function handleIncomingBotMessage(
                 oemNumber: oemResult.oemNumber
               });
             }
+            logger.info("OEM lookup finished in bot flow", {
+              orderId: order.id,
+              success: oemResult.success,
+              oemNumber: oemResult.oemNumber ?? null,
+              message: oemResult.message ?? null
+            });
             replyText =
               language === "en"
                 ? "Perfect, I’ve identified the right part for your car. I’m now checking different shops for suitable offers."
@@ -767,6 +786,7 @@ export async function handleIncomingBotMessage(
             return pa - pb;
           });
 
+          logger.info("Show offers", { orderId: order.id, offersCount: sorted.length });
           if (!sorted || sorted.length === 0) {
             replyText =
               language === "en"
@@ -793,6 +813,12 @@ export async function handleIncomingBotMessage(
               logger.error("Failed to store selectedOfferCandidateId", { error: err?.message, orderId: order.id });
             }
 
+            logger.info("Offer options sent to user", {
+              orderId: order.id,
+              optionIds: [offer.id],
+              optionShops: [offer.shopName],
+              nextStatus: "await_offer_confirmation"
+            });
             nextStatus = "await_offer_confirmation";
             break;
           }
@@ -831,6 +857,12 @@ export async function handleIncomingBotMessage(
             logger.error("Failed to store offerChoiceIds", { error: err?.message, orderId: order.id });
           }
 
+          logger.info("Offer options sent to user", {
+            orderId: order.id,
+            optionIds: top.map((o) => o.id),
+            optionShops: top.map((o) => o.shopName),
+            nextStatus: "await_offer_choice"
+          });
           nextStatus = "await_offer_choice";
         } catch (err: any) {
           logger.error("Fetching offers failed", { error: err?.message, orderId: order.id });
@@ -849,6 +881,7 @@ export async function handleIncomingBotMessage(
         if (t.includes("1")) choiceIndex = 0;
         else if (t.includes("2")) choiceIndex = 1;
         else if (t.includes("3")) choiceIndex = 2;
+        logger.info("User offer choice message", { orderId: order.id, text: userText });
 
         const choiceIds: string[] | undefined = orderData?.offerChoiceIds;
         if (choiceIndex === null || !choiceIds || choiceIndex < 0 || choiceIndex >= choiceIds.length) {
@@ -888,6 +921,13 @@ export async function handleIncomingBotMessage(
           logger.error("Failed to store selected offer", { error: err?.message, orderId: order.id, chosenOfferId });
         }
 
+        logger.info("User selected offer", {
+          orderId: order.id,
+          choiceIndex,
+          chosenOfferId: chosen.id,
+          chosenShop: chosen.shopName,
+          price: chosen.price
+        });
         replyText =
           language === "en"
             ? `Got it. I’ve saved the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${chosen.price} ${
@@ -905,6 +945,13 @@ export async function handleIncomingBotMessage(
         const isYes = ["ja", "okay", "ok", "passt", "yes", "yep", "okey"].some((w) => t.includes(w));
         const isNo = ["nein", "no", "nicht", "anders"].some((w) => t.includes(w));
         const candidateId = orderData?.selectedOfferCandidateId as string | undefined;
+        logger.info("User offer confirmation", {
+          orderId: order.id,
+          text: userText,
+          isYes,
+          isNo,
+          candidateOfferId: candidateId
+        });
 
         if (!isYes && !isNo) {
           replyText =
@@ -960,6 +1007,11 @@ export async function handleIncomingBotMessage(
           logger.error("Failed to store confirmed offer", { error: err?.message, orderId: order.id, candidateId });
         }
 
+        logger.info("Offer selection stored", {
+          orderId: order.id,
+          selectedOfferId: chosen.id,
+          statusUpdatedTo: "ready"
+        });
         replyText =
           language === "en"
             ? "Perfect, I’ve saved this offer for you. Your dealer can now see that you selected this product."

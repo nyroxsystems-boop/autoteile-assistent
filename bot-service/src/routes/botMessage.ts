@@ -31,6 +31,12 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   try {
+    console.log("[Bot] Incoming /bot/message", {
+      from,
+      text,
+      orderId,
+      hasMedia: Array.isArray(mediaUrls) && mediaUrls.length > 0
+    });
     const result: { reply: string; orderId: string } = await handleIncomingBotMessage({
       from,
       text,
@@ -54,6 +60,7 @@ router.post("/", async (req: Request, res: Response) => {
       // Do not fail the whole request if logging to DB fails
     }
 
+    console.log("[Bot] Outgoing reply", { orderId: result.orderId, reply: result.reply });
     res.json(result);
   } catch (err: any) {
     console.error("BotFlow Error:", err);

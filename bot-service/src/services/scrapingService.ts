@@ -87,21 +87,32 @@ const adapters: ShopAdapter[] = [
  * und speichert die Ergebnisse in der DB.
  */
 export async function scrapeOffersForOrder(orderId: string, oemNumber: string) {
+  console.log("[SCRAPE] start", { orderId, oemNumber });
   const allOffers: ScrapedOffer[] = [];
 
   for (const adapter of adapters) {
     try {
+      console.log("[SCRAPE] calling adapter", { adapter: adapter.name, orderId, oemNumber });
       const offers = await adapter.fetchOffers(oemNumber);
+      console.log("[SCRAPE] adapter finished", {
+        adapter: adapter.name,
+        orderId,
+        oemNumber,
+        offersCount: offers.length
+      });
       allOffers.push(...offers);
     } catch (err) {
-      console.error(`Error scraping from adapter ${adapter.name}:`, err);
+      console.error("[SCRAPE] error", { adapter: adapter.name, orderId, oemNumber, error: (err as any)?.message });
     }
   }
 
   if (allOffers.length === 0) {
+    console.warn("[SCRAPE] no offers found", { orderId, oemNumber });
     return [];
   }
 
+  console.log("[SCRAPE] inserting offers into DB", { orderId, offersCount: allOffers.length });
   const inserted = await insertShopOffers(orderId, oemNumber, allOffers);
+  console.log("[SCRAPE] done", { orderId, offersSaved: inserted.length });
   return inserted;
 }

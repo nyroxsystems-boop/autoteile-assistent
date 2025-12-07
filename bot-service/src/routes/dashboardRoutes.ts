@@ -44,22 +44,15 @@ export function createDashboardRouter(): Router {
             .in("order_id", orderIds);
 
           if (vehiclesError) {
-            console.error("[DashboardAPI] Error fetching vehicles:", vehiclesError);
-            if (
-              typeof vehiclesError.message === "string" &&
-              vehiclesError.message.toLowerCase().includes("not find the table")
-            ) {
-              console.warn(
-                "[DashboardAPI] Vehicle table not found, continuing without vehicle data",
-                vehiclesError.message
-              );
-            } else {
-              // For other vehicle errors, still continue but log.
-              console.warn(
-                "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
-                vehiclesError.message
-              );
-            }
+            const msg = vehiclesError.message ?? "";
+            const isMissing = typeof msg === "string" && msg.toLowerCase().includes("not find the table");
+            const logFn = isMissing ? console.warn : console.error;
+            logFn(
+              isMissing
+                ? "[DashboardAPI] Vehicle table not found, continuing without vehicle data"
+                : "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
+              msg
+            );
           } else {
             (vehicles ?? []).forEach((v: any) => vehicleByOrderId.set(v.order_id, v));
           }
@@ -115,20 +108,15 @@ export function createDashboardRouter(): Router {
           .maybeSingle();
 
         if (vehicleError) {
-          if (
-            typeof vehicleError.message === "string" &&
-            vehicleError.message.toLowerCase().includes("not find the table")
-          ) {
-            console.warn(
-              "[DashboardAPI] Vehicle table not found, continuing without vehicle data",
-              vehicleError.message
-            );
-          } else {
-            console.warn(
-              "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
-              vehicleError.message
-            );
-          }
+          const msg = vehicleError.message ?? "";
+          const isMissing = typeof msg === "string" && msg.toLowerCase().includes("not find the table");
+          const logFn = isMissing ? console.warn : console.warn;
+          logFn(
+            isMissing
+              ? "[DashboardAPI] Vehicle table not found, continuing without vehicle data"
+              : "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
+            msg
+          );
         } else {
           vehicle = vehicleRow ?? null;
         }

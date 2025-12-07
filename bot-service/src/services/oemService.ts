@@ -17,6 +17,7 @@ const client = getDefaultTecDocClient();
  * 3. Ergebnis zurückgeben
  */
 export async function resolveOEM(vehicle: TecDocVehicleLookup, part: string): Promise<OemResolutionResult> {
+  console.log("[OEM] resolveOEM start", { vehicle, part });
   console.log("[OEM] resolveOEM called", {
     vehicleSummary: {
       make: vehicle.make,
@@ -32,6 +33,7 @@ export async function resolveOEM(vehicle: TecDocVehicleLookup, part: string): Pr
 
   const missing = determineRequiredFields(vehicle);
   if (missing.length > 0) {
+    console.log("[OEM] Missing required fields", { missing });
     console.log("[OEM] resolveOEM missing required fields", { missing });
     return {
       success: false,
@@ -41,6 +43,7 @@ export async function resolveOEM(vehicle: TecDocVehicleLookup, part: string): Pr
   }
 
   const v = await client.lookupVehicle(vehicle);
+  console.log("[OEM] Vehicle lookup result", { success: v.success, vehicleId: v.vehicleId, message: v.message });
   if (!v.success || !v.vehicleId) {
     console.error("[OEM] Vehicle lookup failed", { message: v.message });
     return {
@@ -50,6 +53,7 @@ export async function resolveOEM(vehicle: TecDocVehicleLookup, part: string): Pr
   }
 
   const oem = await client.lookupOem(v.vehicleId, part);
+  console.log("[OEM] OEM lookup result", { success: oem.success, oemNumbers: oem.oemNumbers, message: oem.message });
   if (!oem.success || !oem.oemNumbers?.length) {
     console.error("[OEM] OEM lookup found no results", { message: oem.message });
     return {

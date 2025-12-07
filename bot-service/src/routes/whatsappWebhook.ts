@@ -82,6 +82,11 @@ router.post("/", async (req, res) => {
 
   // Log incoming Twilio webhook payload
   console.log("[Twilio Webhook] Incoming", { from, text, numMedia, mediaUrls });
+  console.log("[Twilio Webhook] Forwarding to bot/message", {
+    from,
+    safeText: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
+    hasMedia: mediaUrls.length > 0
+  });
 
   let replyText =
     "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
