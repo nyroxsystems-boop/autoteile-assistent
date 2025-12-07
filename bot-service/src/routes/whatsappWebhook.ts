@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import fetch from "node-fetch";
+import twilio from "twilio";
 import { env } from "../config/env";
 
 const router = express.Router();
@@ -87,9 +88,9 @@ router.post("/", async (req, res) => {
     safeText: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
     hasMedia: mediaUrls.length > 0
   });
-
-  let replyText =
+  const replyFallback =
     "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
+  let replyText = replyFallback;
 
   try {
     const safeText = text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : "");
@@ -127,8 +128,30 @@ router.post("/", async (req, res) => {
     replyText = `${replyText} / A technical error occurred. Please try again later.`;
   }
 
-  const twiml = `<Response><Message>${xmlEscape(replyText)}</Message></Response>`;
-  res.type("text/xml").status(200).send(twiml);
+  // Send WhatsApp reply via Twilio REST API
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const fromNumber =
+    process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886"; // Twilio sandbox default
+
+  if (!accountSid || !authToken) {
+    console.error("[Twilio Webhook] Missing Twilio credentials, cannot send reply");
+    return res.status(500).json({ error: "Twilio not configured" });
+  }
+
+  try {
+    const client = twilio(accountSid, authToken);
+    await client.messages.create({
+      from: fromNumber,
+      to: from,
+      body: replyText
+    });
+    console.log("[Twilio Webhook] WhatsApp reply sent", { to: from, bodyPreview: replyText.slice(0, 120) });
+    return res.status(200).json({ ok: true });
+  } catch (err: any) {
+    console.error("[Twilio Webhook] Failed to send WhatsApp reply", { error: err?.message, to: from });
+    return res.status(500).json({ error: "Failed to send reply", details: err?.message });
+  }
 });
 
 export default router;
