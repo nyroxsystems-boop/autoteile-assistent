@@ -119,9 +119,9 @@ export class ProductResolutionService {
     return candidate ?? null;
   }
 
-  private mapLanguageToTecDocLangId(language: string | undefined): number {
+  private mapLanguageToTecDocLangId(language: string | null | undefined): number {
     // TODO: Mapping anpassen, wenn echte TecDoc langId-Werte vorliegen
-    switch ((language || "en").toLowerCase()) {
+    switch ((language ?? "en").toLowerCase()) {
       case "de":
         return 10; // Beispielwert
       case "en":
@@ -130,9 +130,9 @@ export class ProductResolutionService {
     }
   }
 
-  private mapCountryToTecDocCountryFilterId(country: string | undefined): number {
+  private mapCountryToTecDocCountryFilterId(country: string | null | undefined): number {
     // TODO: Mapping anpassen, wenn echte TecDoc countryFilterId-Werte vorliegen
-    switch ((country || "DE").toUpperCase()) {
+    switch ((country ?? "DE").toUpperCase()) {
       case "DE":
         return 62; // Beispielwert für Deutschland
       default:
@@ -173,7 +173,7 @@ export class ProductResolutionService {
     return {
       oem,
       country: order.country,
-      language: order.language,
+      language: order.language ?? "de",
       maxResults: 20,
       variant: supplier.actor_variant ?? undefined,
       config: supplier.actor_config ?? undefined,
@@ -217,7 +217,7 @@ export class ProductResolutionService {
         product_name: product.product_name,
         brand: product.brand,
         base_price: product.base_price,
-        margin_percent: null, // TODO: replace with real margin calculation
+        margin_percent: undefined, // TODO: replace with real margin calculation
         oem_number: product.oem_number,
         image_url: product.image_url,
         url: product.url,
@@ -248,4 +248,10 @@ export class ProductResolutionService {
       );
     }
   }
+}
+
+// TODO: Wire real dependencies and return actual offers; placeholder to satisfy internal routes.
+export async function refreshOffersForOrder(orderId: string): Promise<{ offers: any[] }> {
+  console.warn("[ProductResolutionService] refreshOffersForOrder is not implemented", { orderId });
+  return { offers: [] };
 }
