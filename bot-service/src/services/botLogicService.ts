@@ -414,43 +414,224 @@ async function downloadFromTwilio(mediaUrl: string): Promise<Buffer> {
   return Buffer.from(arrayBuffer);
 }
 
-async function extractVehicleDataFromImage(imageBuffer: Buffer): Promise<{
-  make?: string | null;
-  model?: string | null;
-  vin?: string | null;
-  hsn?: string | null;
-  tsn?: string | null;
-  year?: number | null;
+export interface VehicleOcrResult {
+  make: string | null;
+  model: string | null;
+  vin: string | null;
+  hsn: string | null;
+  tsn: string | null;
+  year: number | null;
+  engineKw: number | null;
+  fuelType: string | null;
+  emissionClass: string | null;
   rawText: string;
-}> {
-  // TODO: Replace with real OCR/Vision call.
-  // Example with OpenAI Vision (pseudocode):
-  // const visionResp = await client.responses.create({
-  //   model: "gpt-4.1",
-  //   input: [
-  //     { role: "user", content: [{ type: "input_text", text: "Extract vehicle data (make, model, year, VIN, HSN, TSN) from this registration document." }, { type: "input_image", image_url: "data:image/jpeg;base64,..." }]}
-  //   ]
-  // });
-  // const rawText = visionResp.output_text ?? "";
-  const rawText = ""; // placeholder
+}
 
-  // Example prompt to extract fields from rawText (if OCR already done):
-  // const extractionPrompt = `
-  // Extract vehicle fields from this German registration document text:
-  // ${rawText}
-  // Return JSON: { "make": "...", "model": "...", "vin": "...", "hsn": "...", "tsn": "...", "year": 2018 }
-  // `;
+async function extractVehicleDataFromImage(imageBuffer: Buffer): Promise<VehicleOcrResult> {
+  const base64 = imageBuffer.toString("base64");
+  const imageUrl = `data:image/jpeg;base64,${base64}`;
 
-  // Placeholder parsing: return empty fields with raw text
-  return {
+  const systemPrompt =
+    "You are an expert OCR and data extractor for German vehicle registration documents (Zulassungsbescheinigung Teil I, old Fahrzeugschein). " +
+    "Be robust to rotated, blurred, dark, skewed, partially occluded images. Always return strict JSON for the requested fields.";
+
+  const userPrompt = `
+Lies dieses Bild (deutscher Fahrzeugschein, Zulassungsbescheinigung Teil I oder altes Fahrzeugschein-Formular).
+Berücksichtige:
+- Bild kann gedreht (90/180°), perspektivisch verzerrt, unscharf, dunkel oder teilweise verdeckt sein.
+- Erkenne Ausrichtung selbst, lies so viel Text wie möglich.
+Felder, die du extrahieren sollst (wenn unsicher → null):
+- make (Hersteller, Feld D.1 oder Klartext, z.B. "BMW" / "BAYER. MOT. WERKE")
+- model (Typ/Handelsbezeichnung, Feld D.2/D.3, z.B. "316ti")
+- vin (Fahrgestellnummer, Feld E)
+- hsn (Herstellerschlüsselnummer, Feld "zu 2.1")
+- tsn (Typschlüsselnummer, Feld "zu 2.2")
+- year (Erstzulassung/Herstellungsjahr, Feld B, als Zahl, z.B. 2002)
+- engineKw (Leistung in kW, Feld P.2)
+- fuelType (Kraftstoff, Feld P.3, z.B. "Benzin", "Diesel")
+- emissionClass (z.B. "EURO 4")
+Gib als Ergebnis NUR folgendes JSON (ohne zusätzlichen Text) zurück:
+{
+  "make": "...",
+  "model": "...",
+  "vin": "...",
+  "hsn": "...",
+  "tsn": "...",
+  "year": 2002,
+  "engineKw": 85,
+  "fuelType": "...",
+  "emissionClass": "...",
+  "rawText": "Vollständiger erkannter Text"
+}
+Fülle unbekannte Felder mit null. rawText soll den gesamten erkannten Text enthalten (oder "" falls nichts erkannt).
+`;
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: "gpt-4.1",
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userPrompt },
+            { type: "image_url", image_url: { url: imageUrl } }
+          ]
+        }
+      ],
+      temperature: 0
+    });
+
+    const content = resp.choices[0]?.message?.content ?? "";
+    const parsed = safeParseVehicleJson(content);
+    return parsed;
+  } catch (err: any) {
+    logger.error("OpenAI Vision OCR failed", { error: err?.message });
+    return {
+      make: null,
+      model: null,
+      vin: null,
+      hsn: null,
+      tsn: null,
+      year: null,
+      engineKw: null,
+      fuelType: null,
+      emissionClass: null,
+      rawText: ""
+    };
+  }
+}
+
+function safeParseVehicleJson(text: string): VehicleOcrResult {
+  const empty: VehicleOcrResult = {
     make: null,
     model: null,
     vin: null,
     hsn: null,
     tsn: null,
     year: null,
-    rawText
+    engineKw: null,
+    fuelType: null,
+    emissionClass: null,
+    rawText: ""
   };
+
+  if (!text) return empty;
+
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  const jsonString = start !== -1 && end !== -1 && end > start ? text.slice(start, end + 1) : text;
+
+  try {
+    const obj = JSON.parse(jsonString);
+    return {
+      make: obj.make ?? null,
+      model: obj.model ?? null,
+      vin: obj.vin ?? null,
+      hsn: obj.hsn ?? null,
+      tsn: obj.tsn ?? null,
+      year: obj.year ?? null,
+      engineKw: obj.engineKw ?? null,
+      fuelType: obj.fuelType ?? null,
+      emissionClass: obj.emissionClass ?? null,
+      rawText: obj.rawText ?? ""
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export interface VehicleInfoPatch {
+  make?: string;
+  model?: string;
+  year?: number;
+  vin?: string;
+  hsn?: string;
+  tsn?: string;
+  engineKw?: number;
+  fuelType?: string;
+}
+
+export type Intent = "ASK_PART" | "GIVE_VEHICLE_DATA" | "SMALLTALK" | "OTHER";
+
+export interface NlpResult {
+  intent: Intent;
+  requestedPart: string | null;
+  vehiclePatch: VehicleInfoPatch;
+  clarificationQuestion: string | null;
+}
+
+export async function understandUserText(
+  text: string,
+  currentVehicle: VehicleOcrResult,
+  currentOrder: { requestedPart?: string | null }
+): Promise<NlpResult> {
+  const system = `
+Du bist ein Assistent für einen Autoteile-WhatsApp-Bot.
+Aufgaben:
+- Intention erkennen: ASK_PART (Nutzer fragt nach Teil), GIVE_VEHICLE_DATA (Nutzer gibt Fahrzeugdaten), SMALLTALK, OTHER.
+- Fahrzeugdaten aus dem Text extrahieren (make, model, year, vin, hsn, tsn, engineKw, fuelType). Nur setzen, wenn sicher erkennbar oder explizit korrigiert.
+- requestedPart füllen, falls ein Teil erwähnt wird (inkl. Positionshinweisen wie vorne/hinten/links/rechts).
+- Falls unklar, clarificationQuestion setzen, sonst null.
+Gib NUR eine JSON-Antwort im Format:
+{
+  "intent": "ASK_PART" | "GIVE_VEHICLE_DATA" | "SMALLTALK" | "OTHER",
+  "requestedPart": string | null,
+  "vehiclePatch": { "make": string, "model": string, "year": number, "vin": string, "hsn": string, "tsn": string, "engineKw": number, "fuelType": string },
+  "clarificationQuestion": string | null
+}
+Fehlende/unsichere Felder: weglassen oder null. Keine freien Texte außerhalb des JSON.`;
+
+  const user = `
+Aktuelle Nachricht: """${text}"""
+Bereits bekanntes Fahrzeug: ${JSON.stringify(currentVehicle)}
+Bereits angefragtes Teil: ${currentOrder?.requestedPart ?? null}
+Extrahiere neue Infos aus der Nachricht. Überschreibe bekannte Felder nur, wenn der Nutzer sie explizit korrigiert.`;
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: "gpt-4.1",
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ],
+      temperature: 0
+    });
+    const content = resp.choices[0]?.message?.content ?? "";
+    return safeParseNlpJson(content);
+  } catch (err: any) {
+    logger.error("OpenAI text understanding failed", { error: err?.message });
+    return {
+      intent: "OTHER",
+      requestedPart: null,
+      vehiclePatch: {},
+      clarificationQuestion: null
+    };
+  }
+}
+
+function safeParseNlpJson(text: string): NlpResult {
+  const empty: NlpResult = {
+    intent: "OTHER",
+    requestedPart: null,
+    vehiclePatch: {},
+    clarificationQuestion: null
+  };
+  if (!text) return empty;
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  const jsonString = start !== -1 && end !== -1 && end > start ? text.slice(start, end + 1) : text;
+  try {
+    const obj = JSON.parse(jsonString);
+    return {
+      intent: obj.intent ?? "OTHER",
+      requestedPart: obj.requestedPart ?? null,
+      vehiclePatch: obj.vehiclePatch ?? {},
+      clarificationQuestion: obj.clarificationQuestion ?? null
+    };
+  } catch {
+    return empty;
+  }
 }
 
 function determineMissingVehicleFields(vehicle: any): string[] {
