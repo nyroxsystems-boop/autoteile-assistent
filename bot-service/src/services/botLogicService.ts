@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import fetch from "node-fetch";
 import {
   insertMessage,
   findOrCreateOrder,
@@ -316,6 +317,7 @@ async function runOemLookupAndScraping(
 
   const partText =
     parsed.part ||
+    orderData?.requestedPart ||
     orderData?.partText ||
     partDescription ||
     (language === "en" ? "the part you mentioned" : "das genannte Teil");
@@ -377,6 +379,66 @@ async function runOemLookupAndScraping(
       nextStatus: "collect_vehicle"
     };
   }
+}
+
+async function downloadImageBuffer(url: string): Promise<Buffer> {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Failed to download image: ${resp.status} ${resp.statusText}`);
+  }
+  const arrayBuffer = await resp.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+async function extractVehicleDataFromImage(imageBuffer: Buffer): Promise<{
+  make?: string | null;
+  model?: string | null;
+  vin?: string | null;
+  hsn?: string | null;
+  tsn?: string | null;
+  year?: number | null;
+  rawText: string;
+}> {
+  // TODO: Replace with real OCR/Vision call.
+  // Example with OpenAI Vision (pseudocode):
+  // const visionResp = await client.responses.create({
+  //   model: "gpt-4.1",
+  //   input: [
+  //     { role: "user", content: [{ type: "input_text", text: "Extract vehicle data (make, model, year, VIN, HSN, TSN) from this registration document." }, { type: "input_image", image_url: "data:image/jpeg;base64,..." }]}
+  //   ]
+  // });
+  // const rawText = visionResp.output_text ?? "";
+  const rawText = ""; // placeholder
+
+  // Example prompt to extract fields from rawText (if OCR already done):
+  // const extractionPrompt = `
+  // Extract vehicle fields from this German registration document text:
+  // ${rawText}
+  // Return JSON: { "make": "...", "model": "...", "vin": "...", "hsn": "...", "tsn": "...", "year": 2018 }
+  // `;
+
+  // Placeholder parsing: return empty fields with raw text
+  return {
+    make: null,
+    model: null,
+    vin: null,
+    hsn: null,
+    tsn: null,
+    year: null,
+    rawText
+  };
+}
+
+function determineMissingVehicleFields(vehicle: any): string[] {
+  const missing: string[] = [];
+  if (!vehicle?.make) missing.push("make");
+  if (!vehicle?.model) missing.push("model");
+  const hasVin = !!vehicle?.vin;
+  const hasHsnTsn = !!vehicle?.hsn && !!vehicle?.tsn;
+  if (!hasVin && !hasHsnTsn) {
+    missing.push("vin_or_hsn_tsn");
+  }
+  return missing;
 }
 
 // ------------------------------
@@ -612,6 +674,18 @@ export async function handleIncomingBotMessage(
       logger.error("parseUserMessage failed", { error: err?.message });
     }
 
+    // requestedPart aus Usertext merken und persistieren
+    const requestedPart = parsed.part?.trim();
+    if (requestedPart) {
+      try {
+        await updateOrderData(order.id, { requestedPart });
+        orderData = { ...orderData, requestedPart };
+      } catch (err: any) {
+        logger.error("Failed to persist requestedPart", { error: err?.message, orderId: order.id });
+      }
+      partDescription = partDescription ? `${partDescription}\n${requestedPart}` : requestedPart;
+    }
+
     // Smalltalk: Antworten, State unverändert
     if (parsed.intent === "smalltalk") {
       const lang = language ?? detectLanguageFromText(userText) ?? "de";
@@ -685,11 +759,88 @@ export async function handleIncomingBotMessage(
         if (hasVehicleImage) {
           const note = vehicleImageNote || "";
           vehicleDescription = vehicleDescription ? `${vehicleDescription}\n${note}` : note;
-          nextStatus = "collect_part";
-          replyText =
-            language === "en"
-              ? "Got the vehicle document. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
-              : "Fahrzeugschein erhalten. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+          try {
+            const buffers: Buffer[] = [];
+            for (const url of payload.mediaUrls ?? []) {
+              try {
+                const buf = await downloadImageBuffer(url);
+                buffers.push(buf);
+              } catch (err: any) {
+                logger.error("Failed to download vehicle image", { error: err?.message, orderId: order.id });
+              }
+            }
+
+            if (buffers.length > 0) {
+              const ocr = await extractVehicleDataFromImage(buffers[0]);
+              logger.info("Vehicle OCR result", { orderId: order.id, ocr });
+
+              await upsertVehicleForOrderFromPartial(order.id, {
+                make: ocr.make ?? null,
+                model: ocr.model ?? null,
+                year: ocr.year ?? null,
+                engineCode: null,
+                vin: ocr.vin ?? null,
+                hsn: ocr.hsn ?? null,
+                tsn: ocr.tsn ?? null
+              });
+
+              try {
+                await updateOrderData(order.id, { vehicleOcrRawText: ocr.rawText ?? "" });
+              } catch (err: any) {
+                logger.error("Failed to store vehicle OCR raw text", { error: err?.message, orderId: order.id });
+              }
+            }
+          } catch (err: any) {
+            logger.error("Vehicle OCR failed", { error: err?.message, orderId: order.id });
+          }
+
+          // Nach OCR prüfen, ob genug Daten für OEM vorhanden sind
+          const vehicle = await getVehicleForOrder(order.id);
+          const missingFields = determineMissingVehicleFields(vehicle);
+          const partTextFromOrder =
+            orderData?.partText ||
+            orderData?.requestedPart ||
+            partDescription ||
+            parsed.part ||
+            null;
+
+          if (missingFields.length === 0 && partTextFromOrder) {
+            const oemFlow = await runOemLookupAndScraping(
+              order.id,
+              language ?? "de",
+              { ...parsed, part: partTextFromOrder },
+              orderData,
+              partDescription ?? null
+            );
+            replyText = oemFlow.replyText;
+            nextStatus = oemFlow.nextStatus;
+          } else if (missingFields.length === 0) {
+            nextStatus = "collect_part";
+            replyText =
+              language === "en"
+                ? "Got the vehicle document. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
+                : "Fahrzeugschein verarbeitet. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+          } else {
+            // gezielte Rückfrage
+            const field = missingFields[0];
+            if (field === "vin_or_hsn_tsn") {
+              replyText =
+                language === "en"
+                  ? "I couldn’t read VIN or HSN/TSN. Please send those numbers or a clearer photo."
+                  : "Ich konnte VIN oder HSN/TSN nicht sicher erkennen. Bitte schick mir die Nummern oder ein schärferes Foto.";
+            } else if (field === "make") {
+              replyText = language === "en" ? "Which car brand is it?" : "Welche Automarke ist es?";
+            } else if (field === "model") {
+              replyText = language === "en" ? "Which exact model is it?" : "Welches Modell genau?";
+            } else {
+              replyText =
+                language === "en"
+                  ? "Please share VIN or HSN/TSN, or at least make/model/year, so I can identify your car."
+                  : "Bitte nenne mir VIN oder HSN/TSN oder mindestens Marke/Modell/Baujahr, damit ich dein Auto identifizieren kann.";
+            }
+            nextStatus = "collect_vehicle";
+          }
+
           break;
         }
 
@@ -765,7 +916,8 @@ export async function handleIncomingBotMessage(
             partCategory: mergedPartInfo.partCategory ?? null,
             partPosition: mergedPartInfo.partPosition ?? null,
             partDetails: mergedPartInfo.partDetails ?? {},
-            partText: mergedPartInfo.partText ?? null
+            partText: mergedPartInfo.partText ?? null,
+            requestedPart: mergedPartInfo.partText ?? orderData?.requestedPart ?? null
           });
           orderData = { ...orderData, ...mergedPartInfo };
         } catch (err: any) {
