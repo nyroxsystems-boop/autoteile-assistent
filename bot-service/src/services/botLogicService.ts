@@ -17,11 +17,63 @@ import { determineRequiredFields } from "./oemRequiredFieldsService";
 import { resolveOEM } from "./oemService";
 import { logger } from "../utils/logger";
 import { scrapeOffersForOrder } from "./scrapingService";
+import { GENERAL_QA_SYSTEM_PROMPT } from "../prompts/generalQaPrompt";
 
 // KI-Client für NLU
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || ""
 });
+
+async function answerGeneralQuestion(params: {
+  userText: string;
+  language: "de" | "en";
+  missingVehicleInfo: string[];
+  knownVehicleSummary: string;
+}): Promise<string> {
+  const { userText, language, missingVehicleInfo, knownVehicleSummary } = params;
+
+  let missingInfoSentence = "";
+  if (missingVehicleInfo.length > 0) {
+    if (language === "de") {
+      missingInfoSentence =
+        "\n\nDamit ich passende Teile finden kann, brauche ich noch: " + missingVehicleInfo.join(", ") + ".";
+    } else {
+      missingInfoSentence =
+        "\n\nTo find the correct parts, I still need: " + missingVehicleInfo.join(", ") + ".";
+    }
+  }
+
+  const userPrompt =
+    (language === "de"
+      ? `Nutzerfrage: "${userText}"\n\nBereits bekannte Fahrzeugdaten: ${knownVehicleSummary}\nNoch fehlende Infos: ${
+          missingVehicleInfo.join(", ") || "keine"
+        }`
+      : `User question: "${userText}"\n\nKnown vehicle data: ${knownVehicleSummary}\nMissing info: ${
+          missingVehicleInfo.join(", ") || "none"
+        }`) + "\n\nBitte beantworte die Frage oben.";
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "gpt-4.1",
+      messages: [
+        { role: "system", content: GENERAL_QA_SYSTEM_PROMPT },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.2
+    });
+
+    let text = response.choices[0]?.message?.content?.trim() || "";
+
+    text += missingInfoSentence;
+
+    return text;
+  } catch (err: any) {
+    console.error("General QA failed:", err?.message);
+    return language === "de"
+      ? "Gute Frage! Leider kann ich sie gerade nicht beantworten. Versuch es bitte später erneut."
+      : "Good question! I can’t answer it right now, please try again later.";
+  }
+}
 
 // ------------------------------
 // Parsing Interface
@@ -889,6 +941,20 @@ export async function handleIncomingBotMessage(
         logger.error("Failed to persist requestedPart", { error: err?.message, orderId: order.id });
       }
       partDescription = partDescription ? `${partDescription}\n${requestedPart}` : requestedPart;
+    }
+
+    // Allgemeine Fragen (General QA)
+    if (parsed.intent === "general_question") {
+      const currentVehicle = await getVehicleForOrder(order.id);
+      const knownVehicleSummary = JSON.stringify(currentVehicle ?? {});
+      const lang = language ?? detectLanguageFromText(userText) ?? "de";
+      const reply = await answerGeneralQuestion({
+        userText,
+        language: lang,
+        missingVehicleInfo: parsed.missingVehicleInfo ?? [],
+        knownVehicleSummary
+      });
+      return { reply, orderId: order.id };
     }
 
     // Smalltalk: Antworten, State unverändert

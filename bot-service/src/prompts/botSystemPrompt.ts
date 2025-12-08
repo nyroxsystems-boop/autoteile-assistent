@@ -203,4 +203,8 @@ WICHTIG:
   - Setze action = "NONE",
   - lasse nextStatus auf dem aktuellen Wert
   - und stelle eine gezielte, konkrete Rückfrage im Feld reply.
+
+NEBENZIEL (für general_question):
+- Wenn der Nutzer allgemeine Fragen stellt, gib eine kurze Erklärung (1–4 Sätze) und führe ihn danach zurück zum Hauptziel (Fahrzeugdaten sammeln).
+`;
 `;

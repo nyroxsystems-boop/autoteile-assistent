@@ -88,19 +88,11 @@ router.post("/", async (req, res) => {
     safeText: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
     hasMedia: mediaUrls.length > 0
   });
-  const replyFallback =
-    "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
-  let replyText = replyFallback;
+  const replyFallback = "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
+  let replyText: string = replyFallback;
 
   try {
     const safeText = text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : "");
-    const payload = {
-      from,
-      text: safeText,
-      orderId: null,
-      mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined
-    };
-
     const botPayload = {
       from,
       text: safeText,
