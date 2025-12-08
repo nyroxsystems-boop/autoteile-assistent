@@ -13,6 +13,9 @@ export interface Vehicle {
   model: string; // z.B. 316Ti
   year?: number;
   engineCode?: string;
+  engineKw?: number;
+  fuelType?: string | null;
+  emissionClass?: string | null;
   vin?: string | null;
   hsn?: string | null;
   tsn?: string | null;

@@ -1336,11 +1336,12 @@ export async function handleIncomingBotMessage(
           logger.error("Failed to update order_data with part info", { error: err?.message, orderId: order.id });
         }
 
+        const vehicleForBrain = await getVehicleForOrder(order.id);
         const brain = await runCollectPartBrain({
           userText,
           parsed,
           order,
-          orderData,
+          orderData: { ...orderData, vehicle: vehicleForBrain ?? undefined },
           language: (language ?? "de") as "de" | "en",
           lastQuestionType: orderData?.lastQuestionType ?? null
         });

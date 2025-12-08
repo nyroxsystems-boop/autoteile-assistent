@@ -624,6 +624,9 @@ export async function upsertVehicleForOrderFromPartial(
     model?: string | null;
     year?: number | null;
     engineCode?: string | null;
+    engineKw?: number | null;
+    fuelType?: string | null;
+    emissionClass?: string | null;
     vin?: string | null;
     hsn?: string | null;
     tsn?: string | null;
@@ -636,6 +639,9 @@ export async function upsertVehicleForOrderFromPartial(
   if (partial.model != null) payload.model = partial.model;
   if (partial.year != null) payload.year = partial.year;
   if (partial.engineCode != null) payload.engine_code = partial.engineCode;
+  if (partial.engineKw != null) payload.engine_kw = partial.engineKw;
+  if (partial.fuelType != null) payload.fuel_type = partial.fuelType;
+  if (partial.emissionClass != null) payload.emission_class = partial.emissionClass;
   if (partial.vin != null) payload.vin = partial.vin;
   if (partial.hsn != null) payload.hsn = partial.hsn;
   if (partial.tsn != null) payload.tsn = partial.tsn;
@@ -668,6 +674,9 @@ export async function upsertVehicleForOrderFromPartial(
     model: data.model,
     year: data.year ?? undefined,
     engineCode: data.engine_code ?? undefined,
+    engineKw: data.engine_kw ?? undefined,
+    fuelType: data.fuel_type ?? undefined,
+    emissionClass: data.emission_class ?? undefined,
     vin: data.vin,
     hsn: data.hsn,
     tsn: data.tsn,
