@@ -207,4 +207,3 @@ WICHTIG:
 NEBENZIEL (für general_question):
 - Wenn der Nutzer allgemeine Fragen stellt, gib eine kurze Erklärung (1–4 Sätze) und führe ihn danach zurück zum Hauptziel (Fahrzeugdaten sammeln).
 `;
-`;

@@ -79,18 +79,30 @@ async function answerGeneralQuestion(params: {
 // Parsing Interface
 // ------------------------------
 export interface ParsedUserMessage {
-  intent: "request_part" | "give_vehicle_info" | "smalltalk" | "unknown";
+  intent:
+    | "request_part"
+    | "give_vehicle_info"
+    | "give_part_info"
+    | "general_question"
+    | "smalltalk"
+    | "other"
+    | "unknown";
 
   // Fahrzeuginfos
   make?: string | null;
   model?: string | null;
   year?: number | null;
   engine?: string | null;
+  engineCode?: string | null;
+  engineKw?: number | null;
+  fuelType?: string | null;
+  emissionClass?: string | null;
   hsn?: string | null;
   tsn?: string | null;
   vin?: string | null;
 
   // Teileinfos
+  requestedPart?: string | null;
   part?: string | null; // Freitext, z.B. "Bremssattel"
   partCategory?: string | null; // normalisiert, z.B. "brake_caliper", "brake_disc"
   position?: string | null; // z.B. "front_left", "front_axle", "rear_both"
