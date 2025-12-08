@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+import { fetchWithTimeoutAndRetry } from "../utils/httpClient";
 
 export interface TecDocVehicleLookup {
   make?: string | null;
@@ -96,13 +96,15 @@ async function callTecDoc(path: string, body: Record<string, any>): Promise<any>
   }
 
   const url = `${TECDOC_BASE_URL}${path}`;
-  const resp = await fetch(url, {
+  const resp = await fetchWithTimeoutAndRetry(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${TECDOC_API_TOKEN}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    timeoutMs: Number(process.env.TECDOC_TIMEOUT_MS || 10000),
+    retry: Number(process.env.TECDOC_RETRY_COUNT || 2)
   });
 
   if (!resp.ok) {

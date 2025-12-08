@@ -20,6 +20,8 @@ import { logger } from "../utils/logger";
 import { scrapeOffersForOrder } from "./scrapingService";
 import { GENERAL_QA_SYSTEM_PROMPT } from "../prompts/generalQaPrompt";
 import { TEXT_NLU_PROMPT } from "../prompts/textNluPrompt";
+import { COLLECT_PART_BRAIN_PROMPT } from "../prompts/collectPartBrainPrompt";
+import { fetchWithTimeoutAndRetry } from "../utils/httpClient";
 
 // KI-Client für NLU
 const client = new OpenAI({
@@ -77,14 +79,78 @@ async function answerGeneralQuestion(params: {
   }
 }
 
+type CollectPartBrainResult = {
+  replyText: string;
+  nextStatus: ConversationStatus | string;
+  slotsToAsk: string[];
+  shouldApologize: boolean;
+  detectedFrustration: boolean;
+};
+
+async function runCollectPartBrain(params: {
+  userText: string;
+  parsed: ParsedUserMessage;
+  order: any;
+  orderData: any;
+  language: "de" | "en";
+  lastQuestionType: string | null;
+}): Promise<CollectPartBrainResult> {
+  const payload = {
+    userText: sanitizeText(params.userText, 1000),
+    parsed: params.parsed,
+    orderData: params.orderData || {},
+    language: params.language,
+    currentStatus: "collect_part",
+    lastQuestionType: params.lastQuestionType
+  };
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        { role: "system", content: COLLECT_PART_BRAIN_PROMPT },
+        { role: "user", content: JSON.stringify(payload) }
+      ],
+      temperature: 0.2
+    });
+
+    const rawText = resp.choices[0]?.message?.content ?? "";
+    const start = rawText.indexOf("{");
+    const end = rawText.lastIndexOf("}");
+    const jsonString = start !== -1 && end !== -1 && end > start ? rawText.slice(start, end + 1) : rawText;
+    const raw = JSON.parse(jsonString);
+
+    return {
+      replyText: raw.replyText ?? "",
+      nextStatus: raw.nextStatus ?? "collect_part",
+      slotsToAsk: Array.isArray(raw.slotsToAsk) ? raw.slotsToAsk : [],
+      shouldApologize: Boolean(raw.shouldApologize),
+      detectedFrustration: Boolean(raw.detectedFrustration)
+    };
+  } catch (error: any) {
+    logger.error("runCollectPartBrain failed", { error: error?.message });
+    return {
+      replyText:
+        params.language === "en"
+          ? "Please tell me which exact part you need and, if relevant, for which side/axle."
+          : "Bitte sag mir genau, welches Teil du brauchst und falls relevant, für welche Achse/Seite.",
+      nextStatus: "collect_part",
+      slotsToAsk: [],
+      shouldApologize: false,
+      detectedFrustration: false
+    };
+  }
+}
+
 // ------------------------------
 // Parsing Interface
 // ------------------------------
 export interface ParsedUserMessage {
   intent:
+    | "greeting"
+    | "send_vehicle_doc"
     | "request_part"
-    | "give_vehicle_info"
-    | "give_part_info"
+    | "describe_symptoms"
     | "general_question"
     | "smalltalk"
     | "other"
@@ -104,17 +170,21 @@ export interface ParsedUserMessage {
   vin?: string | null;
 
   // Teileinfos
-  requestedPart?: string | null;
-  part?: string | null; // Freitext, z.B. "Bremssattel"
-  partCategory?: string | null; // normalisiert, z.B. "brake_caliper", "brake_disc"
-  position?: string | null; // z.B. "front_left", "front_axle", "rear_both"
-  partDetails?: any | null; // z.B. { discDiameter: 300 }
+  isAutoPart?: boolean;
+  userPartText?: string | null;
+  normalizedPartName?: string | null;
+  partCategory?: string | null;
+  position?: string | null;
+  positionNeeded?: boolean;
+  sideNeeded?: boolean;
+  quantity?: number | null;
+  symptoms?: string | null;
+  part?: string | null;
+  partDetails?: any | null;
+  missingVehicleInfo?: string[];
+  missingPartInfo?: string[];
 
-  // fehlende Infos
-  missingVehicleInfo?: string[]; // ["vin","hsn_tsn","make_model_year","engine"]
-  missingPartInfo?: string[]; // ["partCategory","position","size"]
-
-  // Smalltalk
+  // Smalltalk (optional, legacy)
   smalltalkType?: SmalltalkType | null;
   smalltalkReply?: string | null;
 }
@@ -124,7 +194,7 @@ const partRequiredFields: Record<string, string[]> = {
   brake_caliper: ["position"],
   brake_disc: ["position", "disc_diameter"],
   brake_pad: ["position"],
-  shock_absorber: ["position"],
+  shock_absorber: ["position"]
 };
 
 type SmalltalkType = "greeting" | "thanks" | "bot_question";
@@ -224,30 +294,31 @@ function detectNoVehicleDocument(text: string): boolean {
  * Ermittelt, ob die Teilinfos vollständig genug sind, um OEM zu starten.
  */
 function hasSufficientPartInfo(parsed: ParsedUserMessage, orderData: any): { ok: boolean; missing: string[] } {
-  const category = parsed.partCategory || orderData?.partCategory || null;
-  if (!category) {
-    return { ok: false, missing: ["partCategory"] };
+  // 1) Haben wir ein Teil?
+  const normalizedPartName = parsed.normalizedPartName || orderData?.requestedPart || orderData?.partText || null;
+
+  if (!normalizedPartName) {
+    return { ok: false, missing: ["part_name"] };
   }
 
-  const required = partRequiredFields[category] || [];
-  const missing: string[] = [];
+  // 2) Braucht dieses Teil eine Position?
+  const category = parsed.partCategory || orderData?.partCategory || null;
 
-  for (const field of required) {
-    if (field === "position") {
-      const pos = parsed.position || orderData?.partPosition || null;
-      if (!pos) missing.push("position");
-    } else if (field === "disc_diameter") {
-      const fromParsed = parsed.partDetails?.discDiameter;
-      const fromOrder = orderData?.partDetails?.discDiameter;
-      if (!fromParsed && !fromOrder) missing.push("disc_diameter");
-    } else if (field === "suspension_type") {
-      const fromParsed = parsed.partDetails?.suspensionType;
-      const fromOrder = orderData?.partDetails?.suspensionType;
-      if (!fromParsed && !fromOrder) missing.push("suspension_type");
+  // Aus der NLU-Kategorie ableiten, ob eine Position typischerweise nötig ist
+  const positionNeededFromCategory =
+    category === "brake_component" || category === "suspension_component" || category === "body_component";
+
+  const positionNeeded = parsed.positionNeeded === true || positionNeededFromCategory;
+
+  // 3) Wenn Position nötig, aber (noch) keine vorhanden → nachfragen
+  if (positionNeeded) {
+    const position = parsed.position || orderData?.partPosition || null;
+    if (!position) {
+      return { ok: false, missing: ["position"] };
     }
   }
 
-  return { ok: missing.length === 0, missing };
+  return { ok: true, missing: [] };
 }
 
 /**
@@ -285,36 +356,24 @@ function buildVehicleFollowUpQuestion(missingFields: string[], lang: "de" | "en"
 /**
  * Baut eine Rückfrage für fehlende Teil-Felder.
  */
-function buildPartFollowUpQuestion(missingFields: string[], partCategory: string | null, lang: "de" | "en"): string | null {
+function buildPartFollowUpQuestion(missingFields: string[], lang: "de" | "en"): string | null {
   if (!missingFields || missingFields.length === 0) return null;
 
   const field = missingFields[0];
 
   if (lang === "de") {
+    if (field === "part_name") {
+      return "Welches Teil brauchst du genau? Zum Beispiel: Zündkerzen, Bremsscheiben vorne, Stoßdämpfer hinten, Querlenker…";
+    }
     if (field === "position") {
-      return "Brauchst du das Teil vorne oder hinten? Links oder rechts?";
-    }
-    if (field === "disc_diameter") {
-      return "Weißt du, ob du die kleinere oder größere Bremsscheibe hast (z. B. 280mm oder 300mm)? Wenn du es nicht weißt, ist das nicht schlimm – dein Händler prüft das zur Not.";
-    }
-    if (field === "suspension_type") {
-      return "Weißt du, ob dein Fahrzeug ein Sportfahrwerk oder das Standardfahrwerk hat?";
-    }
-    if (field === "partCategory") {
-      return "Um welches Teil geht es genau? Zum Beispiel: Bremsscheiben, Bremsbeläge, Bremssattel, Stoßdämpfer, Querlenker…";
+      return "Für welche Seite/Achse brauchst du das Teil genau? Zum Beispiel: vorne links, vorne rechts, hinten links, hinten rechts.";
     }
   } else {
+    if (field === "part_name") {
+      return "Which part do you need exactly? For example: spark plugs, front brake discs, rear shock absorber, control arm…";
+    }
     if (field === "position") {
-      return "Do you need the part at the front or rear? Left or right side?";
-    }
-    if (field === "disc_diameter") {
-      return "Do you know if you have the smaller or larger brake disc (e.g. 280mm or 300mm)? If you don’t know, your dealer will double-check it.";
-    }
-    if (field === "suspension_type") {
-      return "Do you know if your car has a sport suspension or the standard suspension?";
-    }
-    if (field === "partCategory") {
-      return "Which exact part do you need? For example: brake discs, brake pads, brake caliper, shock absorber, control arm…";
+      return "For which side/axle do you need the part exactly? For example: front left, front right, rear left, rear right.";
     }
   }
 
@@ -331,20 +390,36 @@ function mergePartInfo(existing: any, parsed: ParsedUserMessage) {
     partDetails: { ...(existing?.partDetails || {}) }
   };
 
+  // Kategorie übernehmen (z.B. brake_component, ignition_component ...)
   if (parsed.partCategory) {
     merged.partCategory = parsed.partCategory;
   }
+
+  // Position (front / rear / front_left / ...)
   if (parsed.position) {
     merged.partPosition = parsed.position;
   }
+
+  // Alte Detail-Felder bleiben für Bremsscheiben/Fahrwerk (falls du sie später wieder nutzt)
   if (parsed.partDetails?.discDiameter !== undefined && parsed.partDetails?.discDiameter !== null) {
     merged.partDetails.discDiameter = parsed.partDetails.discDiameter;
   }
   if (parsed.partDetails?.suspensionType) {
     merged.partDetails.suspensionType = parsed.partDetails.suspensionType;
   }
-  if (parsed.part) {
-    merged.partText = merged.partText ? `${merged.partText}\n${parsed.part}` : parsed.part;
+
+  // NEU: Part-Text aus normalizedPartName / userPartText / (legacy) parsed.part
+  const candidatePartTexts: (string | null | undefined)[] = [
+    parsed.normalizedPartName,
+    parsed.userPartText,
+    (parsed as any).part
+  ];
+
+  for (const candidate of candidatePartTexts) {
+    if (candidate && candidate.trim()) {
+      merged.partText = merged.partText ? `${merged.partText}\n${candidate.trim()}` : candidate.trim();
+      break;
+    }
   }
 
   return merged;
@@ -507,10 +582,12 @@ async function downloadFromTwilio(mediaUrl: string): Promise<Buffer> {
   const authHeader =
     "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
 
-  const res = await fetch(mediaUrl, {
+  const res = await fetchWithTimeoutAndRetry(mediaUrl, {
     headers: {
       Authorization: authHeader
-    }
+    },
+    timeoutMs: Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || 10000),
+    retry: Number(process.env.MEDIA_DOWNLOAD_RETRY_COUNT || 2)
   });
 
   if (!res.ok) {
@@ -778,12 +855,17 @@ export async function parseUserMessage(text: string): Promise<ParsedUserMessage>
     const jsonString = start !== -1 && end !== -1 && end > start ? rawText.slice(start, end + 1) : rawText;
     const raw = JSON.parse(jsonString) as any;
 
+    // Merge regex-preparsed VIN/HSN/TSN if NLU missed them
+    const regexVehicle = extractVinHsnTsn(sanitized);
+    if (regexVehicle.vin && !raw.vin) raw.vin = regexVehicle.vin;
+    if (regexVehicle.hsn && !raw.hsn) raw.hsn = regexVehicle.hsn;
+    if (regexVehicle.tsn && !raw.tsn) raw.tsn = regexVehicle.tsn;
+
     const intent =
+      raw.intent === "greeting" ||
+      raw.intent === "send_vehicle_doc" ||
       raw.intent === "request_part" ||
-      raw.intent === "give_vehicle_info" ||
-      raw.intent === "give_part_info" ||
-      raw.intent === "general_question" ||
-      raw.intent === "smalltalk" ||
+      raw.intent === "describe_symptoms" ||
       raw.intent === "other"
         ? raw.intent
         : "unknown";
@@ -801,13 +883,15 @@ export async function parseUserMessage(text: string): Promise<ParsedUserMessage>
       hsn: raw.hsn ?? null,
       tsn: raw.tsn ?? null,
       vin: raw.vin ?? null,
-      part: raw.part ?? null,
-      requestedPart: raw.requestedPart ?? raw.part ?? null,
-      partCategory: raw.partCategory ?? null,
+      isAutoPart: raw.is_auto_part ?? false,
+      userPartText: raw.user_part_text ?? null,
+      normalizedPartName: raw.normalized_part_name ?? null,
+      partCategory: raw.part_category ?? null,
       position: raw.position ?? null,
-      partDetails: raw.partDetails ?? null,
-      missingVehicleInfo: raw.missingVehicleInfo ?? [],
-      missingPartInfo: raw.missingPartInfo ?? [],
+      positionNeeded: raw.position_needed ?? false,
+      sideNeeded: raw.side_needed ?? false,
+      quantity: raw.quantity ?? null,
+      symptoms: raw.symptoms ?? null,
       smalltalkType: raw.smalltalkType ?? null,
       smalltalkReply: raw.smalltalkReply ?? null
     };
@@ -819,8 +903,15 @@ export async function parseUserMessage(text: string): Promise<ParsedUserMessage>
     // Fallback: Intent unknown
     return {
       intent: "unknown",
-      missingVehicleInfo: [],
-      missingPartInfo: [],
+      isAutoPart: false,
+      userPartText: null,
+      normalizedPartName: null,
+      partCategory: null,
+      position: null,
+      positionNeeded: false,
+      sideNeeded: false,
+      quantity: null,
+      symptoms: null,
       smalltalkType: null,
       smalltalkReply: null
     };
@@ -864,6 +955,19 @@ function pickLanguageFromChoice(text: string): "de" | "en" | null {
   if (t.includes("1") || t.includes("deutsch")) return "de";
   if (t.includes("2") || t.includes("english")) return "en";
   return null;
+}
+
+function extractVinHsnTsn(text: string): { vin?: string; hsn?: string; tsn?: string } {
+  const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/i; // VIN excludes I,O,Q
+  const hsnRegex = /\b([0-9]{4})\b/;
+  const tsnRegex = /\b([A-Z0-9]{3,4})\b/i;
+  const vinMatch = text.match(vinRegex);
+  const hsnMatch = text.match(hsnRegex);
+  const tsnMatch = text.match(tsnRegex);
+  const vin = vinMatch ? vinMatch[1].toUpperCase() : undefined;
+  const hsn = hsnMatch ? hsnMatch[1] : undefined;
+  const tsn = tsnMatch ? tsnMatch[1].toUpperCase() : undefined;
+  return { vin, hsn, tsn };
 }
 
 // Helper: detect if user text contains vehicle hints (brand/model/year)
@@ -1215,8 +1319,8 @@ export async function handleIncomingBotMessage(
           partText: orderData?.partText ?? null
         };
 
-        const mergedPartInfo = mergePartInfo(existingPartInfo, parsed);
-        partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
+      const mergedPartInfo = mergePartInfo(existingPartInfo, parsed);
+      partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
 
         // persistierte order_data aktualisieren
         try {
@@ -1232,26 +1336,42 @@ export async function handleIncomingBotMessage(
           logger.error("Failed to update order_data with part info", { error: err?.message, orderId: order.id });
         }
 
-        const suff = hasSufficientPartInfo(parsed, orderData);
+        const brain = await runCollectPartBrain({
+          userText,
+          parsed,
+          order,
+          orderData,
+          language: (language ?? "de") as "de" | "en",
+          lastQuestionType: orderData?.lastQuestionType ?? null
+        });
 
-        if (!suff.ok) {
-          const q = buildPartFollowUpQuestion(
-            suff.missing,
-            mergedPartInfo.partCategory ?? parsed.partCategory ?? null,
-            language ?? "de"
-          );
-          replyText =
-            q ||
-            (language === "en"
-              ? "Please describe the exact part you need, the position (front/rear, left/right), and any symptoms or a part number if you have one."
-              : "Bitte beschreibe genau, welches Teil du brauchst, die Position (vorne/hinten, links/rechts) und eventuelle Symptome oder eine Teilenummer, falls vorhanden.");
-          nextStatus = "collect_part";
-        } else {
+        replyText = brain.replyText;
+        nextStatus = brain.nextStatus as ConversationStatus;
+
+        // track last question type for simple repeat-avoidance
+        let lastQuestionType: string | null = null;
+        if (brain.slotsToAsk?.includes("part_name")) lastQuestionType = "ask_part_name";
+        else if (brain.slotsToAsk?.includes("position")) lastQuestionType = "ask_position";
+        else lastQuestionType = null;
+
+        try {
+          await updateOrderData(order.id, {
+            lastQuestionType
+          });
+          orderData = { ...orderData, lastQuestionType };
+        } catch (err: any) {
+          logger.error("Failed to store lastQuestionType", { error: err?.message, orderId: order.id });
+        }
+
+        // Wenn wir genug haben, OEM-Flow starten
+        if (brain.nextStatus === "oem_lookup") {
           const partText =
+            parsed.normalizedPartName ||
             mergedPartInfo.partText ||
-            parsed.part ||
+            orderData?.requestedPart ||
             (partDescription || "").trim() ||
             (language === "en" ? "the part you mentioned" : "das genannte Teil");
+
           logger.info("Conversation state", {
             orderId: order.id,
             prevStatus: order.status,
