@@ -757,34 +757,26 @@ function determineMissingVehicleFields(vehicle: any): string[] {
 // Schritt 1: Nutzertext analysieren (NLU via OpenAI)
 // ------------------------------
 export async function parseUserMessage(text: string): Promise<ParsedUserMessage> {
-  const sanitized = sanitizeText(text);
-  const prompt = `${TEXT_NLU_PROMPT}
-
-USER_MESSAGE:
-"""${sanitized}"""`;
-
   try {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("OPENAI_API_KEY is not set");
     }
 
-    const completion: any = await client.responses.create({
+    const sanitized = sanitizeText(text);
+    const resp = await client.chat.completions.create({
       model: "gpt-4.1-mini",
-      input: prompt,
-      text: { format: { type: "json_object" } }
+      messages: [
+        { role: "system", content: TEXT_NLU_PROMPT },
+        { role: "user", content: sanitized }
+      ],
+      temperature: 0
     });
 
-    const textContent =
-      completion.output?.find((item: any) => item.type === "message")?.content?.find(
-        (part: any) => part.type === "output_text"
-      )?.text ??
-      completion.output?.[0]?.content?.[0]?.text;
-
-    if (!textContent) {
-      throw new Error("Model returned no text output");
-    }
-
-    const raw = JSON.parse(textContent) as any;
+    const rawText = resp.choices[0]?.message?.content ?? "";
+    const start = rawText.indexOf("{");
+    const end = rawText.lastIndexOf("}");
+    const jsonString = start !== -1 && end !== -1 && end > start ? rawText.slice(start, end + 1) : rawText;
+    const raw = JSON.parse(jsonString) as any;
 
     const intent =
       raw.intent === "request_part" ||
@@ -798,9 +790,9 @@ USER_MESSAGE:
 
     const result: ParsedUserMessage = {
       intent,
-      make: raw.make ?? null,
-      model: raw.model ?? null,
-      year: raw.year ?? null,
+      make: raw.vehicle?.make ?? raw.make ?? null,
+      model: raw.vehicle?.model ?? raw.model ?? null,
+      year: raw.vehicle?.year ?? raw.year ?? null,
       engine: raw.engine ?? null,
       engineCode: raw.engineCode ?? null,
       engineKw: raw.engineKw ?? null,
@@ -827,22 +819,6 @@ USER_MESSAGE:
     // Fallback: Intent unknown
     return {
       intent: "unknown",
-      make: null,
-      model: null,
-      year: null,
-      engine: null,
-      engineCode: null,
-      engineKw: null,
-      fuelType: null,
-      emissionClass: null,
-      hsn: null,
-      tsn: null,
-      vin: null,
-      part: null,
-      requestedPart: null,
-      partCategory: null,
-      position: null,
-      partDetails: null,
       missingVehicleInfo: [],
       missingPartInfo: [],
       smalltalkType: null,
