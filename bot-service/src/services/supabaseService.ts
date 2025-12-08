@@ -634,17 +634,41 @@ export async function upsertVehicleForOrderFromPartial(
 ): Promise<Vehicle> {
   const client = getClient();
 
+  // fetch existing vehicle (if any) to avoid overwriting with null/undefined
+  let existing: any = {};
+  try {
+    const { data: existingVehicle } = await client
+      .from("vehicles")
+      .select("*")
+      .eq("order_id", orderId)
+      .maybeSingle();
+    if (existingVehicle) existing = existingVehicle;
+  } catch {
+    // ignore fetch errors, proceed with partial only
+  }
+
   const payload: any = { order_id: orderId };
-  if (partial.make != null) payload.make = partial.make;
-  if (partial.model != null) payload.model = partial.model;
-  if (partial.year != null) payload.year = partial.year;
-  if (partial.engineCode != null) payload.engine_code = partial.engineCode;
-  if (partial.engineKw != null) payload.engine_kw = partial.engineKw;
-  if (partial.fuelType != null) payload.fuel_type = partial.fuelType;
-  if (partial.emissionClass != null) payload.emission_class = partial.emissionClass;
-  if (partial.vin != null) payload.vin = partial.vin;
-  if (partial.hsn != null) payload.hsn = partial.hsn;
-  if (partial.tsn != null) payload.tsn = partial.tsn;
+  const fields: Array<[keyof typeof partial, string]> = [
+    ["make", "make"],
+    ["model", "model"],
+    ["year", "year"],
+    ["engineCode", "engine_code"],
+    ["engineKw", "engine_kw"],
+    ["fuelType", "fuel_type"],
+    ["emissionClass", "emission_class"],
+    ["vin", "vin"],
+    ["hsn", "hsn"],
+    ["tsn", "tsn"]
+  ];
+
+  for (const [incomingKey, dbKey] of fields) {
+    const incoming = partial[incomingKey];
+    if (incoming !== undefined && incoming !== null && incoming !== "") {
+      payload[dbKey] = incoming;
+    } else if (existing && existing[dbKey] !== undefined) {
+      payload[dbKey] = existing[dbKey];
+    }
+  }
 
   const { data, error } = await client
     .from("vehicles")

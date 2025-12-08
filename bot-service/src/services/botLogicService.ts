@@ -1182,6 +1182,9 @@ export async function handleIncomingBotMessage(
                 model: ocr.model ?? null,
                 year: ocr.year ?? null,
                 engineCode: null,
+                engineKw: ocr.engineKw ?? null,
+                fuelType: ocr.fuelType ?? null,
+                emissionClass: ocr.emissionClass ?? null,
                 vin: ocr.vin ?? null,
                 hsn: ocr.hsn ?? null,
                 tsn: ocr.tsn ?? null
@@ -1274,6 +1277,9 @@ export async function handleIncomingBotMessage(
           model: parsed.model ?? null,
           year: parsed.year ?? null,
           engineCode: parsed.engine ?? null,
+          engineKw: parsed.engineKw ?? null,
+          fuelType: parsed.fuelType ?? null,
+          emissionClass: parsed.emissionClass ?? null,
           vin: parsed.vin ?? null,
           hsn: parsed.hsn ?? null,
           tsn: parsed.tsn ?? null
