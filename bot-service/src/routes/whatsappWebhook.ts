@@ -43,8 +43,9 @@ function validateTwilioSignature(req: express.Request): boolean {
       if (valid) return true;
       console.warn("[Twilio Webhook] twilio.validateRequest failed, falling back to manual check");
     }
-  } catch (e) {
-    const errMsg = (e as any)?.message ?? String(e);
+  } catch (e: unknown) {
+    const errMsg =
+      typeof e === "object" && e !== null && "message" in e ? (e as any).message : String(e);
     console.warn("[Twilio Webhook] twilio.validateRequest threw, falling back to manual check", errMsg);
   }
 
