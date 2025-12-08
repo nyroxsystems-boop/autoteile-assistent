@@ -235,6 +235,31 @@ function detectSmalltalk(text: string): SmalltalkType | null {
   return null;
 }
 
+/**
+ * Detects obviously abusive or insulting messages with a simple word list.
+ * Returns true when the message should be treated as abuse (and not advance the flow).
+ */
+function detectAbusive(text: string): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  // Short list of strong insults / slurs commonly used in German and English.
+  // This is intentionally conservative — tune/extend as needed.
+  const abusive = [
+    "hurensohn",
+    "arschloch",
+    "fotze",
+    "verpiss",
+    "scheiss",
+    "scheiße",
+    "fuck",
+    "bitch",
+    "shit",
+    "idiot",
+    "dummkopf"
+  ];
+  return abusive.some((w) => t.includes(w));
+}
+
 function buildSmalltalkReply(kind: SmalltalkType, lang: "de" | "en", stage: string | null): string {
   const needsVehicleDoc = stage === "awaiting_vehicle_document";
   const needsVehicleData = stage === "collecting_vehicle_data";
@@ -430,17 +455,20 @@ async function runOemLookupAndScraping(
   language: "de" | "en" | null,
   parsed: ParsedUserMessage,
   orderData: any,
-  partDescription: string | null
+  partDescription: string | null,
+  // Optional override vehicle (e.g. OCR result) — used when DB upsert failed but OCR provided enough data
+  vehicleOverride?: { make?: string; model?: string; year?: number; engine?: string; vin?: string; hsn?: string; tsn?: string }
 ): Promise<{ replyText: string; nextStatus: ConversationStatus }> {
-  const vehicle = await getVehicleForOrder(orderId);
+  const vehicle = vehicleOverride ?? (await getVehicleForOrder(orderId));
+  const engineVal = (vehicle as any)?.engineCode ?? (vehicle as any)?.engine ?? undefined;
   const vehicleForOem = {
-    make: vehicle?.make ?? undefined,
-    model: vehicle?.model ?? undefined,
-    year: vehicle?.year ?? undefined,
-    engine: vehicle?.engineCode ?? undefined,
-    vin: vehicle?.vin ?? undefined,
-    hsn: vehicle?.hsn ?? undefined,
-    tsn: vehicle?.tsn ?? undefined
+    make: (vehicle as any)?.make ?? undefined,
+    model: (vehicle as any)?.model ?? undefined,
+    year: (vehicle as any)?.year ?? undefined,
+    engine: engineVal,
+    vin: (vehicle as any)?.vin ?? undefined,
+    hsn: (vehicle as any)?.hsn ?? undefined,
+    tsn: (vehicle as any)?.tsn ?? undefined
   };
 
   const missingVehicleFields = determineRequiredFields(vehicleForOem);
@@ -1010,9 +1038,10 @@ export async function handleIncomingBotMessage(
     let language: "de" | "en" | null = order.language ?? null;
     let languageChanged = false;
 
-    // Nur wenn noch keine Sprache gespeichert ist, heuristisch ermitteln und speichern
+    // Only accept explicit language choice (1 / 2 / de / en). Do NOT auto-persist language based on free text
+    // to avoid incorrect auto-detections that break the flow.
     if (!language) {
-      const detectedLang = detectLanguageSelection(userText) ?? detectLanguageFromText(userText);
+      const detectedLang = detectLanguageSelection(userText); // explicit choices only
       if (detectedLang) {
         language = detectedLang;
         languageChanged = true;
@@ -1051,6 +1080,22 @@ export async function handleIncomingBotMessage(
       logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
     }
 
+    // Early abuse detection: if the message is insulting, short-circuit and don't advance the flow.
+    try {
+      if (detectAbusive(userText)) {
+        const reply = language
+          ? language === "de"
+            ? "Bitte benutze keine Beleidigungen. Ich helfe dir gern weiter, wenn du sachlich bleibst."
+            : "Please refrain from insults. I can help if you ask politely."
+          : "Bitte benutze keine Beleidigungen. / Please refrain from insults.";
+        // Do not change order state. Just respond.
+        return { reply, orderId: order.id };
+      }
+    } catch (e) {
+      // If abuse check fails for any reason, continue normally.
+      logger.warn("Abuse detection failed", { error: (e as any)?.message });
+    }
+
     // parseUserMessage für Intent/NLU
     let parsed: ParsedUserMessage = { intent: "unknown" };
     try {
@@ -1087,17 +1132,8 @@ export async function handleIncomingBotMessage(
 
     // Smalltalk: Antworten, State unverändert
     if (parsed.intent === "smalltalk") {
+      // Use a heuristic to choose reply language but DO NOT persist it or change conversation state.
       const lang = language ?? detectLanguageFromText(userText) ?? "de";
-
-      if (!language && lang) {
-        language = lang;
-        languageChanged = true;
-        try {
-          await updateOrder(order.id, { language });
-        } catch (err: any) {
-          logger.error("Failed to persist language on smalltalk", { error: err?.message, orderId: order.id });
-        }
-      }
 
       let reply =
         parsed.smalltalkReply ||
@@ -1132,7 +1168,7 @@ export async function handleIncomingBotMessage(
           break;
         }
 
-        const chosen = pickLanguageFromChoice(userText) ?? detectLanguageFromText(userText);
+  const chosen = pickLanguageFromChoice(userText); // require explicit choice
         if (chosen) {
           language = chosen;
           languageChanged = true;
@@ -1177,23 +1213,96 @@ export async function handleIncomingBotMessage(
               logger.info("Vehicle OCR result", { orderId: order.id, ocr });
               ocrSucceeded = true;
 
-              await upsertVehicleForOrderFromPartial(order.id, {
-                make: ocr.make ?? null,
-                model: ocr.model ?? null,
-                year: ocr.year ?? null,
-                engineCode: null,
-                engineKw: ocr.engineKw ?? null,
-                fuelType: ocr.fuelType ?? null,
-                emissionClass: ocr.emissionClass ?? null,
-                vin: ocr.vin ?? null,
-                hsn: ocr.hsn ?? null,
-                tsn: ocr.tsn ?? null
-              });
+              // Read current DB vehicle so we can continue even if upsert fails
+              let dbVehicle: any = null;
+              try {
+                dbVehicle = await getVehicleForOrder(order.id);
+              } catch (err: any) {
+                logger.warn("Failed to read existing vehicle before upsert", { error: err?.message, orderId: order.id });
+              }
+
+              try {
+                await upsertVehicleForOrderFromPartial(order.id, {
+                  make: ocr.make ?? null,
+                  model: ocr.model ?? null,
+                  year: ocr.year ?? null,
+                  engineCode: null,
+                  engineKw: ocr.engineKw ?? null,
+                  fuelType: ocr.fuelType ?? null,
+                  emissionClass: ocr.emissionClass ?? null,
+                  vin: ocr.vin ?? null,
+                  hsn: ocr.hsn ?? null,
+                  tsn: ocr.tsn ?? null
+                });
+              } catch (upsertErr: any) {
+                // If DB schema doesn't contain some columns, don't fail the whole flow — we'll continue using OCR result
+                logger.error("Vehicle OCR failed to persist (but will continue using OCR data)", {
+                  error: upsertErr?.message,
+                  orderId: order.id
+                });
+              }
 
               try {
                 await updateOrderData(order.id, { vehicleOcrRawText: ocr.rawText ?? "" });
               } catch (err: any) {
                 logger.error("Failed to store vehicle OCR raw text", { error: err?.message, orderId: order.id });
+              }
+
+              // Build a combined vehicle from DB + OCR so we can proceed even if DB upsert failed
+              const combinedVehicle = {
+                make: ocr.make ?? dbVehicle?.make ?? null,
+                model: ocr.model ?? dbVehicle?.model ?? null,
+                year: ocr.year ?? dbVehicle?.year ?? null,
+                engineCode: null,
+                vin: ocr.vin ?? dbVehicle?.vin ?? null,
+                hsn: ocr.hsn ?? dbVehicle?.hsn ?? null,
+                tsn: ocr.tsn ?? dbVehicle?.tsn ?? null
+              };
+
+              // After OCR prüfen, ob genug Daten für OEM vorhanden sind
+              const missingFieldsAfterOcr = determineMissingVehicleFields(combinedVehicle);
+              const partTextFromOrderAfterOcr =
+                orderData?.partText || orderData?.requestedPart || partDescription || parsed.part || null;
+
+              if (missingFieldsAfterOcr.length === 0 && partTextFromOrderAfterOcr) {
+                const oemFlow = await runOemLookupAndScraping(
+                  order.id,
+                  language ?? "de",
+                  { ...parsed, part: partTextFromOrderAfterOcr },
+                  orderData,
+                  partDescription ?? null,
+                  // pass combined vehicle so resolveOEM can continue even if DB was not updated
+                  combinedVehicle
+                );
+                replyText = oemFlow.replyText;
+                nextStatus = oemFlow.nextStatus;
+                // We've handled the rest of this branch, so break out
+                bufferLoop: ;
+              } else if (missingFieldsAfterOcr.length === 0) {
+                nextStatus = "collect_part";
+                replyText =
+                  language === "en"
+                    ? "Got the vehicle document. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
+                    : "Fahrzeugschein verarbeitet. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+              } else {
+                // gezielte Rückfrage
+                const field = missingFieldsAfterOcr[0];
+                if (field === "vin_or_hsn_tsn") {
+                  replyText =
+                    language === "en"
+                      ? "I couldn’t read VIN or HSN/TSN. Please send those numbers or a clearer photo."
+                      : "Ich konnte VIN oder HSN/TSN nicht sicher erkennen. Bitte schick mir die Nummern oder ein schärferes Foto.";
+                } else if (field === "make") {
+                  replyText = language === "en" ? "Which car brand is it?" : "Welche Automarke ist es?";
+                } else if (field === "model") {
+                  replyText = language === "en" ? "Which exact model is it?" : "Welches Modell genau?";
+                } else {
+                  replyText =
+                    language === "en"
+                      ? "Please share VIN or HSN/TSN, or at least make/model/year, so I can identify your car."
+                      : "Bitte nenne mir VIN oder HSN/TSN oder mindestens Marke/Modell/Baujahr, damit ich dein Auto identifizieren kann.";
+                }
+                nextStatus = "collect_vehicle";
               }
             }
           } catch (err: any) {
