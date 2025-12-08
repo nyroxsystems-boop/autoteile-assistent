@@ -781,3 +781,36 @@ export async function updateOrderStatus(
 
   return data;
 }
+
+/**
+ * Persistiert Metadaten zu einem extern gestarteten Scraping/Actor‑Job auf der Order.
+ * Beispielsweise: Apify runId / TecDoc actor run id / job id und ein einfacher Status.
+ */
+export async function updateOrderScrapeTask(
+  orderId: string,
+  update: {
+    scrapeTaskId?: string | null;
+    scrapeStatus?: string | null;
+    scrapeResult?: any | null;
+  }
+) {
+  const client = getClient();
+
+  const payload: Record<string, any> = {};
+  if (update.scrapeTaskId !== undefined) payload.scrape_task_id = update.scrapeTaskId ?? null;
+  if (update.scrapeStatus !== undefined) payload.scrape_status = update.scrapeStatus ?? null;
+  if (update.scrapeResult !== undefined) payload.scrape_result = update.scrapeResult ?? null;
+
+  const { data, error } = await client
+    .from("orders")
+    .update(payload)
+    .eq("id", orderId)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to update order scrape task: ${error.message}`);
+  }
+
+  return data;
+}

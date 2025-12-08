@@ -11,13 +11,15 @@ import {
   updateOrderOEM,
   listShopOffersByOrderId,
   getOrderById,
-  updateOrderStatus
+  updateOrderStatus,
+  updateOrderScrapeTask
 } from "./supabaseService";
 import { determineRequiredFields } from "./oemRequiredFieldsService";
 import { resolveOEM } from "./oemService";
 import { logger } from "../utils/logger";
 import { scrapeOffersForOrder } from "./scrapingService";
 import { GENERAL_QA_SYSTEM_PROMPT } from "../prompts/generalQaPrompt";
+import { TEXT_NLU_PROMPT } from "../prompts/textNluPrompt";
 
 // KI-Client für NLU
 const client = new OpenAI({
@@ -109,8 +111,8 @@ export interface ParsedUserMessage {
   partDetails?: any | null; // z.B. { discDiameter: 300 }
 
   // fehlende Infos
-  missingVehicleInfo?: string[]; // ["make","model","year","engine"]
-  missingPartInfo?: string[]; // ["position","disc_diameter"]
+  missingVehicleInfo?: string[]; // ["vin","hsn_tsn","make_model_year","engine"]
+  missingPartInfo?: string[]; // ["partCategory","position","size"]
 
   // Smalltalk
   smalltalkType?: SmalltalkType | null;
@@ -389,20 +391,63 @@ async function runOemLookupAndScraping(
   try {
     const oemResult = await resolveOEM(vehicleForOem, partText);
 
-    if (oemResult.success && oemResult.oemNumber) {
+    // Wenn der OEM‑Resolver eine Actor/Job‑ID zurückgibt (z.B. Apify runId / tecdoc actor id),
+    // speichern wir diese in oem_data / order row, damit man später verifizieren kann,
+    // welcher Actor gestartet wurde und ggf. Webhook‑Ergebnisse zuordnen kann.
+    try {
+      const extraOemData = {
+        oemNumber: oemResult.oemNumber,
+        actorRunId: (oemResult as any)?.actorRunId ?? (oemResult as any)?.jobId ?? null,
+        raw: (oemResult as any)?.raw ?? null
+      };
       await updateOrderOEM(orderId, {
-        oemStatus: "ok",
-        oemData: { oemNumber: oemResult.oemNumber }
+        oemStatus: oemResult.success ? "ok" : "error",
+        oemData: extraOemData,
+        oemError: oemResult.success ? null : oemResult.message ?? null
       });
+    } catch (uErr: any) {
+      logger.warn("Failed to persist OEM actor metadata", { orderId, error: uErr?.message ?? uErr });
+    }
 
+    if (oemResult.success && oemResult.oemNumber) {
+      // Starte Scraping. Wenn die Funktion einen Job/Run zurückliefert (z.B. async Actor), speichere auch das.
       try {
-        await scrapeOffersForOrder(orderId, oemResult.oemNumber);
+        const scrapeResult = await scrapeOffersForOrder(orderId, oemResult.oemNumber);
+        // scrapeResult könnte z.B. { ok: true, offersInserted: 12 } oder { jobId: 'run-xxx' } sein.
+        if (scrapeResult && (scrapeResult as any).jobId) {
+          try {
+            await updateOrderScrapeTask(orderId, {
+              scrapeTaskId: (scrapeResult as any).jobId,
+              scrapeStatus: "started",
+              scrapeResult: scrapeResult
+            });
+          } catch (uErr: any) {
+            logger.warn("Failed to persist scrape job id", { orderId, error: uErr?.message ?? uErr });
+          }
+        } else {
+          // falls das Scraping synchron gelaufen ist, können wir optional Status/Result abspeichern
+          try {
+            await updateOrderScrapeTask(orderId, {
+              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+              scrapeResult: scrapeResult ?? null
+            });
+          } catch (uErr: any) {
+            logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
+          }
+        }
       } catch (err: any) {
         logger.error("Auto-scraping failed after OEM resolution", {
           error: err?.message,
           orderId,
           oemNumber: oemResult.oemNumber
         });
+        // Auch Fehler beim Starten des Actors persistieren
+        try {
+          await updateOrderScrapeTask(orderId, {
+            scrapeStatus: "failed",
+            scrapeResult: { error: err?.message ?? String(err) }
+          });
+        } catch {}
       }
 
       logger.info("OEM lookup finished in bot flow", {
@@ -420,11 +465,9 @@ async function runOemLookupAndScraping(
         nextStatus: "show_offers"
       };
     } else {
-      await updateOrderOEM(orderId, {
-        oemStatus: "error",
-        oemError: oemResult.message ?? "OEM konnte nicht ermittelt werden."
-      });
-
+      // Falls resolveOEM nicht erfolgreich war, ensure we persist error details (already handled above),
+      // und frage gezielt nach mehr Fahrzeugdaten.
+      // (updateOrderOEM wurde oben bereits mit oemStatus=error gefüllt, falls nötig)
       return {
         replyText:
           language === "en"
@@ -714,72 +757,11 @@ function determineMissingVehicleFields(vehicle: any): string[] {
 // Schritt 1: Nutzertext analysieren (NLU via OpenAI)
 // ------------------------------
 export async function parseUserMessage(text: string): Promise<ParsedUserMessage> {
-  const prompt = `
-Du bist ein KI-Parser für einen Autoteile-Bot.
+  const sanitized = sanitizeText(text);
+  const prompt = `${TEXT_NLU_PROMPT}
 
-Du sollst eine KUNDENNACHRICHT analysieren und folgende Felder extrahieren:
-
-- "intent": 
-    - "request_part" → Kunde fragt nach einem Teil oder beschreibt ein Problem mit einem Fahrzeugteil
-    - "give_vehicle_info" → Kunde gibt Fahrzeugdaten an (Marke, Modell, Baujahr, HSN/TSN, VIN etc.)
-    - "smalltalk" → Begrüßung oder allgemeines "Hi", "Danke", "Bist du ein Bot?" etc.
-    - "unknown" → alles andere
-
-- Fahrzeuginfos (falls erkennbar):
-    - "make": z.B. "BMW", "VW"
-    - "model": z.B. "320d", "Golf 7"
-    - "year": z.B. 2012
-    - "engine": z.B. "2.0 TDI", "135kW", "N47"
-    - "hsn": Herstellerschlüsselnummer
-    - "tsn": Typschlüsselnummer
-    - "vin": Fahrgestellnummer
-
-- Teileinfos (falls erkennbar):
-    - "part": Freitext wie der Kunde es nennt, z.B. "Bremssattel vorne links"
-    - "partCategory": normalisiert, z.B.:
-        - "brake_caliper"
-        - "brake_disc"
-        - "brake_pad"
-        - "shock_absorber"
-        - "control_arm"
-        - "clutch"
-        - etc.
-    - "position": z.B. "front_left", "front_right", "front_axle", "rear_left", "rear_right", "rear_axle", "unknown"
-    - "partDetails": optionales Objekt mit Details wie:
-        - { "discDiameter": 300 }
-        - { "suspensionType": "sport" }
-
-- "missingVehicleInfo": Liste von Strings, welche Fahrzeugdaten fehlen, z.B. ["make","model","year","engine"]
-- "missingPartInfo": Liste von Strings, welche Teilinfos fehlen, z.B. ["position","disc_diameter"]
-- "smalltalkType": "greeting" | "thanks" | "bot_question" | null
-- "smalltalkReply": kurze, freundliche Antwort für Smalltalk (nur setzen, wenn intent="smalltalk")
-
-Wenn du etwas nicht sicher weißt, lass das Feld auf null.
-
-Gib NUR folgendes JSON zurück:
-
-{
-  "intent": "...",
-  "make": "...",
-  "model": "...",
-  "year": 2012,
-  "engine": "...",
-  "hsn": null,
-  "tsn": null,
-  "vin": null,
-  "part": "...",
-  "partCategory": "...",
-  "position": "...",
-  "partDetails": { ... },
-  "missingVehicleInfo": [...],
-  "missingPartInfo": [...],
-  "smalltalkType": "...",
-  "smalltalkReply": "..."
-}
-
-KUNDENTEXT:
-${text}
-`;
+USER_MESSAGE:
+"""${sanitized}"""`;
 
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -802,15 +784,69 @@ ${text}
       throw new Error("Model returned no text output");
     }
 
-    return JSON.parse(textContent) as ParsedUserMessage;
+    const raw = JSON.parse(textContent) as any;
+
+    const intent =
+      raw.intent === "request_part" ||
+      raw.intent === "give_vehicle_info" ||
+      raw.intent === "give_part_info" ||
+      raw.intent === "general_question" ||
+      raw.intent === "smalltalk" ||
+      raw.intent === "other"
+        ? raw.intent
+        : "unknown";
+
+    const result: ParsedUserMessage = {
+      intent,
+      make: raw.make ?? null,
+      model: raw.model ?? null,
+      year: raw.year ?? null,
+      engine: raw.engine ?? null,
+      engineCode: raw.engineCode ?? null,
+      engineKw: raw.engineKw ?? null,
+      fuelType: raw.fuelType ?? null,
+      emissionClass: raw.emissionClass ?? null,
+      hsn: raw.hsn ?? null,
+      tsn: raw.tsn ?? null,
+      vin: raw.vin ?? null,
+      part: raw.part ?? null,
+      requestedPart: raw.requestedPart ?? raw.part ?? null,
+      partCategory: raw.partCategory ?? null,
+      position: raw.position ?? null,
+      partDetails: raw.partDetails ?? null,
+      missingVehicleInfo: raw.missingVehicleInfo ?? [],
+      missingPartInfo: raw.missingPartInfo ?? [],
+      smalltalkType: raw.smalltalkType ?? null,
+      smalltalkReply: raw.smalltalkReply ?? null
+    };
+
+    return result;
   } catch (error: any) {
     logger.error("parseUserMessage failed", { error: error?.message, text });
 
     // Fallback: Intent unknown
     return {
       intent: "unknown",
+      make: null,
+      model: null,
+      year: null,
+      engine: null,
+      engineCode: null,
+      engineKw: null,
+      fuelType: null,
+      emissionClass: null,
+      hsn: null,
+      tsn: null,
+      vin: null,
+      part: null,
+      requestedPart: null,
+      partCategory: null,
+      position: null,
+      partDetails: null,
       missingVehicleInfo: [],
-      missingPartInfo: []
+      missingPartInfo: [],
+      smalltalkType: null,
+      smalltalkReply: null
     };
   }
 }

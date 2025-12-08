@@ -146,7 +146,7 @@ export function createDashboardRouter(): Router {
         .from("shop_offers")
         .select("*")
         .eq("order_id", orderId)
-        .order("base_price", { ascending: true });
+        .order("price", { ascending: true });
 
       if (offersError) {
         console.error("[DashboardAPI] Error fetching offers:", offersError);
@@ -193,7 +193,7 @@ export function createDashboardRouter(): Router {
 
       const { data: ordersInRange, error: ordersInRangeError } = await supabase
         .from("orders")
-        .select("id, status, order_data, created_at")
+        .select("id, status, order_data, oem_status, created_at")
         .gte("created_at", fromIso)
         .lte("created_at", toIso);
 
@@ -215,7 +215,7 @@ export function createDashboardRouter(): Router {
         if (status === "done") completedOrders++;
 
         const orderData = (o.order_data || {}) as any;
-        const oemStatus = orderData?.oemStatus as string | undefined;
+        const oemStatus = (o as any)?.oem_status || orderData?.oemStatus;
         if (oemStatus === "not_found" || oemStatus === "multiple_matches") {
           openOemIssues++;
         }
@@ -224,7 +224,7 @@ export function createDashboardRouter(): Router {
       const { data: inboundMessages, error: inboundMessagesError } = await supabase
         .from("messages")
         .select("id")
-        .eq("direction", "in")
+        .eq("direction", "incoming")
         .gte("created_at", fromIso)
         .lte("created_at", toIso);
 

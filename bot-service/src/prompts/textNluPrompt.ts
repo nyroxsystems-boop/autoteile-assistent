@@ -1,3 +1,4 @@
+// Zentrale NLU-Beschreibung. Wird in botLogicService.parseUserMessage verwendet.
 export const TEXT_NLU_PROMPT = `You are an NLU parser for an autoparts WhatsApp assistant.
 
 Your task:

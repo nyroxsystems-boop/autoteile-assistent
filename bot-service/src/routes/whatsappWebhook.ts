@@ -34,6 +34,19 @@ function validateTwilioSignature(req: express.Request): boolean {
     return false;
   }
 
+  // Prefer built-in validator from the Twilio SDK if available
+  try {
+    const validator = (twilio as any).validateRequest;
+    if (typeof validator === "function") {
+      // Twilio SDK expects: (authToken, signature, url, params)
+      const valid = validator(authToken, signature, url, req.body || {});
+      if (valid) return true;
+      console.warn("[Twilio Webhook] twilio.validateRequest failed, falling back to manual check");
+    }
+  } catch (e) {
+    console.warn("[Twilio Webhook] twilio.validateRequest threw, falling back to manual check", e?.message ?? e);
+  }
+
   const params = req.body || {};
   const sortedKeys = Object.keys(params).sort();
   let data = url;
