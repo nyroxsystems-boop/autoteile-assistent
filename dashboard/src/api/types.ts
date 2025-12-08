@@ -8,6 +8,23 @@ export type OrderStatus =
 
 export type OrderLanguage = 'de' | 'en' | null;
 
+export type SelectedOfferSummary = {
+  shopName?: string | null;
+  brand?: string | null;
+  price?: number | null;
+  currency?: string | null;
+  deliveryTimeDays?: number | null;
+};
+
+export type OrderData = {
+  conversationStatus?: OrderStatus | string | null;
+  vehicleDescription?: string | null;
+  partDescription?: string | null;
+  offerChoiceIds?: string[] | null;
+  selectedOfferId?: string | null;
+  selectedOfferSummary?: SelectedOfferSummary | null;
+};
+
 export type Vehicle = {
   vin?: string | null;
   hsn?: string | null;
@@ -31,6 +48,7 @@ export type Order = {
   id: string;
   status: OrderStatus | string;
   language: OrderLanguage;
+  order_data?: OrderData | null;
   created_at?: string;
   updated_at?: string;
   createdAt?: string;
@@ -46,14 +64,21 @@ export type Order = {
 export type ShopOffer = {
   id: string;
   orderId: string;
-  brand: string;
-  productName: string;
+  shopName?: string | null;
+  brand: string | null;
+  productName?: string | null;
+  productUrl?: string | null;
   oemNumber: string | null;
   basePrice: number;
+  currency?: string | null;
   marginPercent: number | null;
   finalPrice?: number;
   status: 'draft' | 'published';
   tier?: 'cheap' | 'medium' | 'expensive' | null;
+  availability?: string | null;
+  deliveryTimeDays?: number | null;
+  rating?: number | null;
+  isRecommended?: boolean | null;
 };
 
 export type ApiError = {

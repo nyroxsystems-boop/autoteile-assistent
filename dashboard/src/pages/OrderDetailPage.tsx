@@ -1,45 +1,31 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getOrder, getOrderOffers, publishOffers } from '../api/orders';
-import type { Order, ShopOffer } from '../api/types';
+import { getOrder, getOrderOffers } from '../api/orders';
+import type { Order, OrderData, SelectedOfferSummary, ShopOffer } from '../api/types';
 
-type OfferRow = ShopOffer & {
-  selected?: boolean;
-  marginPercent: number | null;
-};
+type OfferRow = ShopOffer & { priceValue: number; currencyValue: string };
 
 const OrderDetailPage = () => {
   const { id: orderId } = useParams<{ id: string }>();
 
   const [order, setOrder] = useState<Order | null>(null);
   const [offers, setOffers] = useState<OfferRow[]>([]);
-  const [defaultMargin, setDefaultMargin] = useState<number>(20);
 
   const [orderError, setOrderError] = useState<string | null>(null);
   const [offersError, setOffersError] = useState<string | null>(null);
-  const [publishError, setPublishError] = useState<string | null>(null);
 
   const [isOrderLoading, setIsOrderLoading] = useState<boolean>(false);
   const [isOffersLoading, setIsOffersLoading] = useState<boolean>(false);
-  const [isPublishing, setIsPublishing] = useState<boolean>(false);
-
-  useEffect(() => {
-    console.log('[OrderDetailPage] mounted for orderId:', orderId);
-    return () => console.log('[OrderDetailPage] unmounted for orderId:', orderId);
-  }, [orderId]);
 
   useEffect(() => {
     if (!orderId) return;
     const fetchOrderData = async () => {
-      console.log('[OrderDetailPage] fetching order', orderId);
       setIsOrderLoading(true);
       setOrderError(null);
       try {
         const data = await getOrder(orderId);
-        console.log('[OrderDetailPage] fetched order', data);
         setOrder(data);
       } catch (error) {
-        console.error('[OrderDetailPage] API error', error);
         setOrderError(error instanceof Error ? error.message : 'Unknown error');
       } finally {
         setIsOrderLoading(false);
@@ -47,21 +33,18 @@ const OrderDetailPage = () => {
     };
 
     const fetchOffersData = async () => {
-      console.log('[OrderDetailPage] fetching offers', orderId);
       setIsOffersLoading(true);
       setOffersError(null);
       try {
         const data = await getOrderOffers(orderId);
-        console.log('[OrderDetailPage] fetched offers', data);
         setOffers(
-          data.map((offer) => ({
+          (data ?? []).map((offer) => ({
             ...offer,
-            selected: false,
-            marginPercent: offer.marginPercent
+            priceValue: offer.basePrice ?? offer.finalPrice ?? 0,
+            currencyValue: offer.currency ?? 'EUR'
           }))
         );
       } catch (error) {
-        console.error('[OrderDetailPage] API error', error);
         setOffersError(error instanceof Error ? error.message : 'Unknown error');
       } finally {
         setIsOffersLoading(false);
@@ -72,63 +55,33 @@ const OrderDetailPage = () => {
     fetchOffersData();
   }, [orderId]);
 
-  const offersWithComputedPrice = useMemo(() => {
-    return offers.map((offer) => {
-      const appliedMargin =
-        offer.marginPercent !== null && offer.marginPercent !== undefined
-          ? offer.marginPercent
-          : defaultMargin;
-      const finalPrice = offer.basePrice * (1 + (appliedMargin ?? 0) / 100);
-      return { ...offer, finalPrice, appliedMargin };
-    });
-  }, [offers, defaultMargin]);
+  const orderData: OrderData =
+    (order as any)?.order_data ||
+    (order as any)?.orderData || {
+      conversationStatus: null,
+      vehicleDescription: null,
+      partDescription: null
+    };
 
-  const handleMarginChange = (offerId: string, value: string) => {
-    const parsed = value === '' ? null : Number(value);
-    setOffers((prev) =>
-      prev.map((offer) =>
-        offer.id === offerId ? { ...offer, marginPercent: Number.isNaN(parsed) ? null : parsed } : offer
-      )
-    );
-  };
+  const selectedOfferId = orderData?.selectedOfferId ?? null;
+  const selectedOfferSummary: SelectedOfferSummary | null = orderData?.selectedOfferSummary ?? null;
 
-  const handleSelect = (offerId: string, checked: boolean) => {
-    setOffers((prev) =>
-      prev.map((offer) => (offer.id === offerId ? { ...offer, selected: checked } : offer))
-    );
-  };
+  const selectedOffer = useMemo(
+    () => (selectedOfferId ? offers.find((o) => o.id === selectedOfferId) ?? null : null),
+    [offers, selectedOfferId]
+  );
 
-  const handlePublish = async () => {
-    setPublishError(null);
-    if (!orderId) {
-      setPublishError('Order ID is missing');
-      return;
-    }
-    const selectedOfferIds = offers.filter((o) => o.selected).map((o) => o.id);
-    if (selectedOfferIds.length === 0) {
-      setPublishError('Please select at least one offer to publish.');
-      return;
-    }
-    console.log('[OrderDetailPage] publishOffers clicked', { orderId, selectedOfferIds });
-
-    try {
-      setIsPublishing(true);
-      const response = await publishOffers(orderId, selectedOfferIds);
-      console.log('[OrderDetailPage] publishOffers success', response);
-      setOffers((prev) =>
-        prev.map((offer) =>
-          selectedOfferIds.includes(offer.id)
-            ? { ...offer, status: 'published', selected: false }
-            : offer
-        )
-      );
-    } catch (error) {
-      console.error('[OrderDetailPage] API error', error);
-      setPublishError(error instanceof Error ? error.message : 'Failed to publish offers');
-    } finally {
-      setIsPublishing(false);
-    }
-  };
+  const selectedCardOffer: any = selectedOffer ?? (selectedOfferSummary
+    ? {
+        shopName: selectedOfferSummary.shopName ?? '—',
+        brand: selectedOfferSummary.brand ?? '—',
+        priceValue: selectedOfferSummary.price ?? NaN,
+        currencyValue: selectedOfferSummary.currency ?? 'EUR',
+        deliveryTimeDays: selectedOfferSummary.deliveryTimeDays ?? null,
+        productUrl: (selectedOfferSummary as any)?.productUrl ?? null,
+        id: selectedOfferId ?? undefined
+      }
+    : null);
 
   if (!orderId) {
     return <div style={styles.wrapper}>No order id provided.</div>;
@@ -182,95 +135,112 @@ const OrderDetailPage = () => {
             <div style={styles.label}>Status</div>
             <div style={styles.value}>{order?.status ?? '—'}</div>
           </div>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <header style={styles.sectionHeader}>
-          <h3 style={styles.title}>Vehicle</h3>
-        </header>
-        <div style={styles.rowGrid}>
           <div>
-            <div style={styles.label}>VIN</div>
-            <div style={styles.value}>{order?.vehicle?.vin ?? '—'}</div>
-          </div>
-          <div>
-            <div style={styles.label}>HSN / TSN</div>
-            <div style={styles.value}>
-              {order?.vehicle?.hsn ?? '—'} / {order?.vehicle?.tsn ?? '—'}
-            </div>
-          </div>
-          <div>
-            <div style={styles.label}>Make / Model</div>
-            <div style={styles.value}>
-              {order?.vehicle?.make ?? '—'} {order?.vehicle?.model ?? ''}
-            </div>
-          </div>
-          <div>
-            <div style={styles.label}>Year</div>
-            <div style={styles.value}>{order?.vehicle?.year ?? '—'}</div>
-          </div>
-          <div>
-            <div style={styles.label}>Engine</div>
-            <div style={styles.value}>{order?.vehicle?.engine ?? '—'}</div>
+            <div style={styles.label}>Conversation</div>
+            <div style={styles.value}>{orderData?.conversationStatus ?? '—'}</div>
           </div>
         </div>
       </section>
 
       <section style={styles.card}>
         <header style={styles.sectionHeader}>
-          <h3 style={styles.title}>Part</h3>
+          <h3 style={styles.title}>Order Summary</h3>
         </header>
         <div style={styles.rowGrid}>
           <div>
-            <div style={styles.label}>Category</div>
-            <div style={styles.value}>{order?.part?.partCategory ?? '—'}</div>
+            <div style={styles.label}>Customer</div>
+            <div style={styles.value}>{(order as any)?.customerName ?? '—'}</div>
           </div>
           <div>
-            <div style={styles.label}>Position</div>
-            <div style={styles.value}>{order?.part?.position ?? '—'}</div>
+            <div style={styles.label}>Contact</div>
+            <div style={styles.value}>{(order as any)?.customerPhone ?? (order as any)?.customerContact ?? '—'}</div>
           </div>
           <div>
-            <div style={styles.label}>Part Text</div>
-            <div style={styles.value}>{order?.part?.partText ?? '—'}</div>
+            <div style={styles.label}>Requested Part</div>
+            <div style={styles.value}>{(order as any)?.requestedPartName ?? orderData?.partDescription ?? '—'}</div>
           </div>
           <div>
-            <div style={styles.label}>OEM Status</div>
-            <div style={styles.value}>{order?.part?.oemStatus ?? '—'}</div>
-          </div>
-          <div>
-            <div style={styles.label}>OEM Number</div>
-            <div style={styles.value}>{order?.part?.oemNumber ?? '—'}</div>
+            <div style={styles.label}>Language</div>
+            <div style={styles.value}>{order?.language ?? '—'}</div>
           </div>
         </div>
         <div style={styles.detailBox}>
-          <div style={styles.label}>Part Details</div>
-          <pre style={styles.pre}>
-{JSON.stringify(order?.part?.partDetails ?? {}, null, 2)}
-          </pre>
+          <div style={styles.label}>Vehicle (description)</div>
+          <div style={styles.value}>{orderData?.vehicleDescription ?? '—'}</div>
         </div>
       </section>
 
       <section style={styles.card}>
         <header style={styles.sectionHeader}>
-          <div>
-            <h3 style={styles.title}>Offers</h3>
-            <p style={styles.subtitle}>
-              Final price = basePrice * (1 + margin% / 100). If margin is empty, default applies.
-            </p>
+          <h3 style={styles.title}>
+            {order?.language === 'en' ? "Customer's selected product" : 'Gewähltes Produkt des Kunden'}
+          </h3>
+          {selectedOfferId ? <span style={styles.selectedBadge}>Selected by customer</span> : null}
+        </header>
+        {selectedCardOffer ? (
+          <div style={styles.selectedGrid}>
+            <div>
+              <div style={styles.label}>{order?.language === 'en' ? 'Brand' : 'Marke'}</div>
+              <div style={styles.value}>{(selectedCardOffer as any).brand ?? '—'}</div>
+            </div>
+            <div>
+              <div style={styles.label}>Shop</div>
+              <div style={styles.value}>{(selectedCardOffer as any).shopName ?? '—'}</div>
+            </div>
+            <div>
+              <div style={styles.label}>{order?.language === 'en' ? 'Price' : 'Preis'}</div>
+              <div style={styles.value}>
+                {Number.isFinite((selectedCardOffer as any).priceValue)
+                  ? `${(selectedCardOffer as any).priceValue.toFixed(2)} ${
+                      (selectedCardOffer as any).currencyValue ?? 'EUR'
+                    }`
+                  : '—'}
+              </div>
+            </div>
+            <div>
+              <div style={styles.label}>{order?.language === 'en' ? 'Delivery' : 'Lieferzeit'}</div>
+              <div style={styles.value}>
+                {(selectedCardOffer as any).deliveryTimeDays ??
+                  (order?.language === 'en' ? 'n/a' : 'k.A.')}
+              </div>
+            </div>
+            <div>
+              <div style={styles.label}>Rating</div>
+              <div style={styles.value}>
+                {(selectedCardOffer as any).rating
+                  ? `${(selectedCardOffer as any).rating}/5`
+                  : order?.language === 'en'
+                  ? 'n/a'
+                  : 'k.A.'}
+              </div>
+            </div>
+            {(selectedCardOffer as any).productUrl ? (
+              <div style={styles.linkRow}>
+                <a
+                  href={(selectedCardOffer as any).productUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={styles.linkButton}
+                >
+                  {order?.language === 'en' ? 'Open product' : 'Zum Produkt'}
+                </a>
+              </div>
+            ) : null}
           </div>
-          <div style={styles.defaultMargin}>
-            <label htmlFor="defaultMargin" style={styles.label}>
-              Default Margin %
-            </label>
-            <input
-              id="defaultMargin"
-              type="number"
-              value={defaultMargin}
-              onChange={(e) => setDefaultMargin(Number(e.target.value))}
-              style={styles.input}
-            />
+        ) : (
+          <div style={styles.emptyBox}>
+            {order?.language === 'en'
+              ? 'The customer has not selected an offer yet.'
+              : 'Der Kunde hat noch kein Angebot ausgewählt.'}
           </div>
+        )}
+      </section>
+
+      <section style={styles.card}>
+        <header style={styles.sectionHeader}>
+          <h3 style={styles.title}>
+            {order?.language === 'en' ? 'All offers for this order' : 'Alle Angebote zu dieser Bestellung'}
+          </h3>
         </header>
 
         {offersError ? (
@@ -281,62 +251,82 @@ const OrderDetailPage = () => {
 
         {isOffersLoading ? (
           <div style={styles.loading}>Loading offers…</div>
-        ) : offersWithComputedPrice.length === 0 ? (
-          <div style={styles.emptyBox}>No offers available yet.</div>
+        ) : offers.length === 0 ? (
+          <div style={styles.emptyBox}>
+            {order?.language === 'en'
+              ? 'No offers have been found for this order yet.'
+              : 'Es wurden noch keine Angebote zu dieser Bestellung gefunden.'}
+          </div>
         ) : (
           <div style={styles.tableWrapper}>
             <table style={styles.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>Select</th>
+                  <th style={styles.th}>Shop</th>
                   <th style={styles.th}>Brand</th>
-                  <th style={styles.th}>Product</th>
-                  <th style={styles.th}>OEM</th>
-                  <th style={styles.th}>Base Price</th>
-                  <th style={styles.th}>Margin %</th>
-                  <th style={styles.th}>Final Price</th>
-                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Preis</th>
+                  <th style={styles.th}>Verfügbarkeit</th>
+                  <th style={styles.th}>Lieferzeit</th>
+                  <th style={styles.th}>Rating</th>
+                  <th style={styles.th}>Link</th>
                 </tr>
               </thead>
               <tbody>
-                {offersWithComputedPrice.map((offer) => (
-                  <tr key={offer.id} style={styles.tr}>
-                    <td style={styles.td}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(offer.selected)}
-                        onChange={(e) => handleSelect(offer.id, e.target.checked)}
-                      />
-                    </td>
-                    <td style={styles.td}>{offer.brand}</td>
-                    <td style={styles.td}>{offer.productName}</td>
-                    <td style={styles.td}>{offer.oemNumber ?? '—'}</td>
-                    <td style={styles.td}>€ {offer.basePrice.toFixed(2)}</td>
-                    <td style={styles.td}>
-                      <input
-                        type="number"
-                        value={offer.marginPercent ?? ''}
-                        placeholder={`${defaultMargin}`}
-                        onChange={(e) => handleMarginChange(offer.id, e.target.value)}
-                        style={styles.input}
-                      />
-                    </td>
-                    <td style={styles.td}>€ {offer.finalPrice.toFixed(2)}</td>
-                    <td style={styles.td}>{offer.status}</td>
-                  </tr>
-                ))}
+                {offers.map((offer) => {
+                  const isSelected = selectedOfferId && offer.id === selectedOfferId;
+                  const priceLabel = `${(offer.priceValue ?? offer.basePrice ?? 0).toFixed(2)} ${
+                    offer.currencyValue ?? 'EUR'
+                  }`;
+                  return (
+                    <tr
+                      key={offer.id}
+                      style={{
+                        ...styles.tr,
+                        ...(isSelected ? styles.selectedRow : {})
+                      }}
+                    >
+                      <td style={styles.td}>
+                        <div style={styles.cellStack}>
+                          <div style={styles.value}>{offer.shopName ?? '—'}</div>
+                      {isSelected ? (
+                        <span style={styles.selectedBadgeSmall}>
+                          {order?.language === 'en' ? 'Selected' : 'Ausgewählt'}
+                        </span>
+                      ) : null}
+                        </div>
+                      </td>
+                      <td style={styles.td}>{offer.brand ?? '—'}</td>
+                      <td style={styles.td}>{priceLabel}</td>
+                      <td style={styles.td}>{offer.availability ?? '—'}</td>
+                      <td style={styles.td}>
+                        {offer.deliveryTimeDays !== null && offer.deliveryTimeDays !== undefined
+                          ? `${offer.deliveryTimeDays} Tage`
+                          : '—'}
+                      </td>
+                      <td style={styles.td}>
+                        {offer.rating !== null && offer.rating !== undefined ? `${offer.rating}/5` : '—'}
+                      </td>
+                      <td style={styles.td}>
+                        {offer.productUrl ? (
+                          <a
+                            href={offer.productUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={styles.link}
+                          >
+                            {order?.language === 'en' ? 'Open product' : 'Zum Produkt'}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
-
-        {publishError ? <div style={styles.errorBox}>{publishError}</div> : null}
-
-        <div style={styles.publishRow}>
-          <button style={styles.primaryButton} onClick={handlePublish} disabled={isPublishing}>
-            {isPublishing ? 'Publishing…' : 'Publish selected offers'}
-          </button>
-        </div>
       </section>
     </div>
   );
@@ -404,9 +394,31 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 8,
     fontWeight: 700
   },
+  selectedBadge: {
+    padding: '6px 10px',
+    backgroundColor: '#ecfdf3',
+    color: '#166534',
+    borderRadius: 8,
+    border: '1px solid #bbf7d0',
+    fontWeight: 700
+  },
+  selectedBadgeSmall: {
+    display: 'inline-block',
+    marginTop: 4,
+    padding: '4px 8px',
+    backgroundColor: '#ecfdf3',
+    color: '#166534',
+    borderRadius: 9999,
+    border: '1px solid #bbf7d0',
+    fontSize: 12,
+    fontWeight: 700
+  },
+  selectedRow: {
+    backgroundColor: '#f8fafc'
+  },
   rowGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
     gap: 12
   },
   label: {
@@ -421,26 +433,10 @@ const styles: Record<string, CSSProperties> = {
   detailBox: {
     marginTop: 8
   },
-  pre: {
-    margin: '8px 0 0',
-    padding: 12,
-    backgroundColor: '#0f172a',
-    color: '#e2e8f0',
-    borderRadius: 8,
-    overflow: 'auto',
-    fontSize: 13
-  },
-  defaultMargin: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    minWidth: 180
-  },
-  input: {
-    padding: '8px 10px',
-    borderRadius: 8,
-    border: '1px solid #cbd5e1',
-    fontSize: 14
+  selectedGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 12
   },
   tableWrapper: {
     overflowX: 'auto',
@@ -476,18 +472,24 @@ const styles: Record<string, CSSProperties> = {
     color: '#075985',
     fontWeight: 600
   },
-  publishRow: {
-    display: 'flex',
-    justifyContent: 'flex-end'
+  link: {
+    color: '#1d4ed8',
+    fontWeight: 700
   },
-  primaryButton: {
-    padding: '10px 14px',
+  linkButton: {
+    display: 'inline-block',
+    padding: '10px 12px',
     backgroundColor: '#1d4ed8',
     color: '#ffffff',
-    border: 'none',
     borderRadius: 10,
-    fontWeight: 700,
-    cursor: 'pointer'
+    textDecoration: 'none',
+    fontWeight: 700
+  },
+  linkRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8
   }
 };
 

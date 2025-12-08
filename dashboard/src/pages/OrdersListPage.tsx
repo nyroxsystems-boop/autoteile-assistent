@@ -79,6 +79,15 @@ const OrdersListPage = () => {
     );
   };
 
+  const renderSelectedBadge = (order: Order) => {
+    const selectedId =
+      (order as any)?.order_data?.selectedOfferId ??
+      (order as any)?.orderData?.selectedOfferId ??
+      null;
+    if (!selectedId) return null;
+    return <span style={styles.selectedBadge}>Produkt gewählt</span>;
+  };
+
   const renderPrice = (order: Order) => {
     const value = order.totalPrice ?? order.total_price ?? null;
     if (value === null || value === undefined) return '–';
@@ -150,7 +159,10 @@ const OrdersListPage = () => {
                   <td style={styles.td}>{order.id}</td>
                   <td style={styles.td}>{renderCustomer(order)}</td>
                   <td style={styles.td}>{renderVehicle(order)}</td>
-                  <td style={styles.td}>{renderPart(order)}</td>
+                  <td style={styles.td}>
+                    {renderPart(order)}
+                    {renderSelectedBadge(order)}
+                  </td>
                   <td style={styles.td}>{renderPrice(order)}</td>
                   <td style={styles.td}>{renderStatus(String(order.status))}</td>
                   <td style={styles.td}>
@@ -269,6 +281,17 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 8,
     fontWeight: 700,
     cursor: 'pointer'
+  },
+  selectedBadge: {
+    marginTop: 6,
+    display: 'inline-block',
+    padding: '4px 8px',
+    borderRadius: 9999,
+    backgroundColor: '#ecfdf3',
+    color: '#166534',
+    border: '1px solid #bbf7d0',
+    fontSize: 12,
+    fontWeight: 700
   }
 };
 
