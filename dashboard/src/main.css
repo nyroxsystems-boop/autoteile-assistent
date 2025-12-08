@@ -1,9 +1,14 @@
 :root {
+  --bg: #f6f8fb;
+  --card: #ffffff;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --accent-2: #06b6d4;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #0f172a;
-  background-color: #f6f8fb;
+  background-color: var(--bg);
 }
 
 * {
@@ -13,7 +18,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: #f6f8fb;
+  background: linear-gradient(180deg, #f6f8fb 0%, #eef2ff 100%);
 }
 
 a {
@@ -23,4 +28,43 @@ a {
 
 #root {
   min-height: 100vh;
+}
+
+/* Global UI helpers */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(2,6,23,0.08);
+  padding: 18px;
+}
+
+.primary {
+  background: linear-gradient(90deg,var(--accent),var(--accent-2));
+  color: #fff;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.ghost {
+  background: transparent;
+  border: 1px solid rgba(15,23,42,0.06);
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.muted { color: var(--muted); }
+
+/* nicer empty state */
+.empty-state {
+  display:flex;align-items:center;gap:12px;padding:20px;border-radius:12px;background:linear-gradient(180deg,#fbfbff,#fff);border:1px dashed #e6eef8;color:var(--muted)
 }

@@ -1,4 +1,5 @@
 import { insertShopOffers } from "./supabaseService";
+import { ApifyClient } from "./apifyClient";
 
 export interface ScrapedOffer {
   shopName: string;
@@ -76,11 +77,62 @@ class MockKfzteileAdapter implements ShopAdapter {
   }
 }
 
-// Registry aller aktiven Shop-Adapter (später erweiterbar)
-const adapters: ShopAdapter[] = [
-  new MockAutodocAdapter(),
-  new MockKfzteileAdapter()
-];
+// If APIFY_SHOP_ACTORS is set (JSON array of { shopName, actorId }), we create Apify adapters
+function buildAdapters(): ShopAdapter[] {
+  const configured = process.env.APIFY_SHOP_ACTORS;
+  if (configured) {
+    try {
+      const list = JSON.parse(configured) as Array<{ shopName: string; actorId: string }>;
+      const token = process.env.APIFY_TOKEN || "";
+      if (!token) {
+        console.warn("APIFY_TOKEN not set; falling back to mock adapters");
+        return [new MockAutodocAdapter(), new MockKfzteileAdapter()];
+      }
+      const client = new ApifyClient({ token });
+
+      class ApifyShopAdapter implements ShopAdapter {
+        name: string;
+        actorId: string;
+
+        constructor(name: string, actorId: string) {
+          this.name = name;
+          this.actorId = actorId;
+        }
+
+        async fetchOffers(oem: string) {
+          try {
+            const items = await client.runActorDataset<any, any>(this.actorId, { oem });
+            // Expect actor to return array of items compatible with ScrapedOffer
+            return (items || []).map((it: any) => ({
+              shopName: this.name,
+              brand: it.brand ?? it.manufacturer ?? null,
+              price: Number(it.price ?? 0),
+              currency: it.currency ?? "EUR",
+              availability: it.availability ?? null,
+              deliveryTimeDays: it.deliveryTimeDays ?? it.delivery_time_days ?? null,
+              productUrl: it.productUrl ?? it.product_url ?? null,
+              rating: it.rating ?? null,
+              isRecommended: it.isRecommended ?? it.is_recommended ?? null
+            }));
+          } catch (err) {
+            console.error("[SCRAPE][ApifyAdapter] actor run failed", { actorId: this.actorId, error: (err as any)?.message });
+            return [];
+          }
+        }
+      }
+
+      const adapters: ShopAdapter[] = list.map((l) => new ApifyShopAdapter(l.shopName, l.actorId));
+      return adapters.length > 0 ? adapters : [new MockAutodocAdapter(), new MockKfzteileAdapter()];
+    } catch (err) {
+      console.warn("APIFY_SHOP_ACTORS parse failed, falling back to mock adapters", { error: (err as any)?.message });
+      return [new MockAutodocAdapter(), new MockKfzteileAdapter()];
+    }
+  }
+
+  return [new MockAutodocAdapter(), new MockKfzteileAdapter()];
+}
+
+const adapters: ShopAdapter[] = buildAdapters();
 
 /**
  * Führt Scraping/Preisabfrage für eine bestimmte Order + OEM durch

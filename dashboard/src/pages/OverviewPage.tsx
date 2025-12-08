@@ -2,12 +2,22 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { listOrders } from '../api/orders';
 import { fetchOverviewStats, type OverviewStats } from '../api/stats';
 import type { Order } from '../api/types';
+import { useAuth } from '../auth/AuthContext';
+import { fetchMerchantSettings, saveMerchantSettings, type MerchantSettings } from '../api/merchant';
 
 const OverviewPage = () => {
   const [timeRange, setTimeRange] = useState<'Heute' | 'Diese Woche' | 'Dieser Monat'>('Heute');
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [defaultMargin, setDefaultMargin] = useState<number | null>(null);
+  const [selectedShops, setSelectedShops] = useState<string[]>([]);
+  const [step, setStep] = useState<number>(0);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const auth = useAuth();
+
+  // a small default list of known shops (can be replaced by a real backend list later)
+  const KNOWN_SHOPS = ['Autodoc', 'Stahlgruber', 'Mister Auto'];
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -46,6 +56,26 @@ const OverviewPage = () => {
     loadOrders();
   }, []);
 
+  // load merchant settings when session is available
+  useEffect(() => {
+    const loadSettings = async () => {
+      if (!auth?.session?.merchantId) return;
+      try {
+        const s = await fetchMerchantSettings(auth.session.merchantId);
+        if (s) {
+          setSelectedShops(s.selectedShops ?? []);
+          setDefaultMargin(s.marginPercent ?? null);
+        }
+      } catch (err) {
+        console.error('[OverviewPage] Fehler beim Laden der Merchant-Settings', err);
+      } finally {
+        setSettingsLoaded(true);
+      }
+    };
+
+    loadSettings();
+  }, [auth?.session?.merchantId]);
+
   const oemIssuesCount = useMemo(
     () =>
       orders.filter(
@@ -66,13 +96,43 @@ const OverviewPage = () => {
   };
 
   const handleMarginSave = () => {
+    // legacy single-field save (keeps behavior but delegates to stepper save below)
     console.log('[OverviewPage] Standard-Marge speichern angeklickt', defaultMargin);
+    handleSaveSettings();
+  };
+
+  const handleToggleShop = (shop: string) => {
+    setSelectedShops((prev) => (prev.includes(shop) ? prev.filter((s) => s !== shop) : [...prev, shop]));
+  };
+
+  const handleSaveSettings = async () => {
+    if (!auth?.session?.merchantId) {
+      setError('Bitte zuerst anmelden, um Einstellungen zu speichern.');
+      return;
+    }
+    setIsSavingSettings(true);
+    setError(null);
+    try {
+      await saveMerchantSettings(auth.session.merchantId, {
+        selectedShops,
+        marginPercent: defaultMargin ?? 0
+      });
+      setError(null);
+      setStep(0);
+      console.log('[OverviewPage] Merchant settings saved');
+    } catch (err) {
+      console.error('[OverviewPage] Fehler beim Speichern der Merchant-Settings', err);
+      setError(err instanceof Error ? err.message : 'Fehler beim Speichern');
+    } finally {
+      setIsSavingSettings(false);
+    }
   };
 
   console.log('[OverviewPage] Hinweis-Sektion gerendert');
 
   return (
-    <div style={styles.wrapper}>
+    <div style={styles.wrapper} className="container">
+      <div className="card" style={{ padding: 20 }}>
       <div style={styles.header}>
         <div>
           <p style={styles.eyebrow}>Schnellüberblick</p>
@@ -141,28 +201,68 @@ const OverviewPage = () => {
           />
         </div>
       </section>
+      </div>
 
-      <section style={styles.section}>
-        <h2 style={styles.sectionTitle}>Standard-Marge</h2>
-        <p style={styles.muted}>
-          Diese Marge wird prozentual auf den Teilepreis aufgeschlagen und dem Kunden als Endpreis
-          angezeigt.
-        </p>
-        <div style={styles.marginRow}>
-          <label htmlFor="defaultMargin" style={styles.label}>
-            Standard-Marge (%)
-          </label>
-          <input
-            id="defaultMargin"
-            type="number"
-            value={defaultMargin ?? ''}
-            placeholder="z.B. 20"
-            onChange={(e) => handleMarginChange(e.target.value)}
-            style={styles.input}
-          />
-          <button style={styles.primaryButton} onClick={handleMarginSave}>
-            Speichern
-          </button>
+      <section style={styles.section} className="card">
+        <h2 style={styles.sectionTitle}>Onboarding & Grundeinstellungen</h2>
+        <p style={styles.muted}>Einmalig auswählen: Shops und Standard-Marge. Später jederzeit änderbar.</p>
+
+  <div style={styles.stepper}>
+          <div style={styles.stepHeader}>
+            <div style={{ ...styles.stepPill, ...(step === 0 ? styles.stepActive : {}) }}>1</div>
+            <div style={styles.stepTitle}>Shops auswählen</div>
+          </div>
+          {step === 0 ? (
+            <div style={styles.stepBody}>
+              <p style={styles.muted}>Wähle die Shops aus, die bei der Angebotssuche berücksichtigt werden sollen.</p>
+              <div style={styles.shopsGrid}>
+                {KNOWN_SHOPS.map((s) => (
+                  <label key={s} style={styles.shopCard}>
+                    <input type="checkbox" checked={selectedShops.includes(s)} onChange={() => handleToggleShop(s)} />
+                    <div style={styles.shopName}>{s}</div>
+                  </label>
+                ))}
+              </div>
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <button style={styles.primaryButton} onClick={() => setStep(1)} disabled={selectedShops.length === 0}>
+                  Weiter
+                </button>
+                <button style={styles.ghostButton} onClick={() => setSelectedShops([])}>
+                  Zurücksetzen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={styles.stepBody}>
+              <div style={styles.stepHeader}>
+                <div style={{ ...styles.stepPill, ...(step === 1 ? styles.stepActive : {}) }}>2</div>
+                <div style={styles.stepTitle}>Standard-Marge</div>
+              </div>
+              <p style={styles.muted}>Diese Marge wird prozentual auf den Teilepreis aufgeschlagen.</p>
+              <div style={styles.marginRow}>
+                <label htmlFor="defaultMargin" style={styles.label}>
+                  Standard-Marge (%)
+                </label>
+                <input
+                  id="defaultMargin"
+                  type="number"
+                  value={defaultMargin ?? ''}
+                  placeholder="z.B. 20"
+                  onChange={(e) => handleMarginChange(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <button style={styles.primaryButton} onClick={handleSaveSettings} disabled={isSavingSettings}>
+                  {isSavingSettings ? 'Speichert…' : 'Speichern & Abschließen'}
+                </button>
+                <button style={styles.ghostButton} onClick={() => setStep(0)}>
+                  Zurück
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -308,6 +408,68 @@ const styles: Record<string, CSSProperties> = {
     backgroundColor: '#fef2f2',
     color: '#991b1b',
     border: '1px solid #fecdd3'
+  }
+  ,
+  stepper: {
+    border: '1px solid #e6eef8',
+    padding: 14,
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  stepHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12
+  },
+  stepPill: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#e6eef8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 800,
+    color: '#0f172a'
+  },
+  stepActive: {
+    backgroundColor: '#1d4ed8',
+    color: '#fff'
+  },
+  stepTitle: {
+    fontWeight: 800,
+    color: '#0f172a'
+  },
+  stepBody: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  shopsGrid: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap'
+  },
+  shopCard: {
+    border: '1px solid #e2e8f0',
+    padding: 10,
+    borderRadius: 8,
+    display: 'flex',
+    gap: 8,
+    alignItems: 'center'
+  },
+  shopName: {
+    fontWeight: 700
+  },
+  ghostButton: {
+    padding: '10px 14px',
+    background: 'transparent',
+    border: '1px solid #cbd5e1',
+    borderRadius: 10,
+    cursor: 'pointer'
   }
 };
 

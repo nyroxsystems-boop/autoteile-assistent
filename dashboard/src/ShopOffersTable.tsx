@@ -119,7 +119,7 @@ const ShopOffersTable: React.FC<Props> = ({ orderId }) => {
         </div>
       ) : null}
 
-      <div style={styles.tableWrapper}>
+      <div style={styles.tableWrapper} className="card">
         <table style={styles.table}>
           <thead>
             <tr>
@@ -134,7 +134,7 @@ const ShopOffersTable: React.FC<Props> = ({ orderId }) => {
             {isLoading ? (
               <tr>
                 <td style={styles.td} colSpan={5}>
-                  Angebote werden geladen…
+                  <div className="empty-state">Angebote werden geladen…</div>
                 </td>
               </tr>
             ) : null}
@@ -142,14 +142,14 @@ const ShopOffersTable: React.FC<Props> = ({ orderId }) => {
             {!isLoading && visibleOffers.length === 0 ? (
               <tr>
                 <td style={styles.td} colSpan={5}>
-                  Keine Angebote gefunden.
+                  <div className="empty-state">Keine Angebote gefunden.</div>
                 </td>
               </tr>
             ) : null}
 
             {!isLoading &&
               visibleOffers.map((offer) => (
-                <tr key={offer.id} style={styles.tr}>
+                <tr key={offer.id} style={{ ...styles.tr, transition: 'background 0.18s ease' }}>
                   <td style={styles.td}>
                     <div style={styles.cellStack}>
                       <div style={styles.productName}>{offer.product_name}</div>
@@ -167,6 +167,7 @@ const ShopOffersTable: React.FC<Props> = ({ orderId }) => {
                     <button
                       style={styles.actionButton}
                       onClick={() => window.open(offer.url, '_blank')}
+                      aria-label={`Bestellen bei ${offer.supplier_name}`}
                     >
                       Hier bestellen
                     </button>

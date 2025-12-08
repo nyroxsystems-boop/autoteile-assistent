@@ -8,10 +8,12 @@ import {
   ConversationStatus,
   upsertVehicleForOrderFromPartial,
   getVehicleForOrder,
+  persistOemMetadata,
   updateOrderOEM,
   listShopOffersByOrderId,
   getOrderById,
   updateOrderStatus,
+  persistScrapeResult,
   updateOrderScrapeTask
 } from "./supabaseService";
 import { determineRequiredFields } from "./oemRequiredFieldsService";
@@ -22,6 +24,8 @@ import { GENERAL_QA_SYSTEM_PROMPT } from "../prompts/generalQaPrompt";
 import { TEXT_NLU_PROMPT } from "../prompts/textNluPrompt";
 import { COLLECT_PART_BRAIN_PROMPT } from "../prompts/collectPartBrainPrompt";
 import { fetchWithTimeoutAndRetry } from "../utils/httpClient";
+import { ORCHESTRATOR_PROMPT } from "../prompts/orchestratorPrompt";
+import { generateChatCompletion } from "./openAiService";
 
 // KI-Client für NLU
 const client = new OpenAI({
@@ -258,6 +262,44 @@ function detectAbusive(text: string): boolean {
     "dummkopf"
   ];
   return abusive.some((w) => t.includes(w));
+}
+
+type OrchestratorAction = "ask_slot" | "confirm" | "oem_lookup" | "smalltalk" | "abusive" | "noop";
+
+interface OrchestratorResult {
+  action: OrchestratorAction;
+  reply: string;
+  slots: Record<string, any>;
+  required_slots?: string[];
+  confidence?: number;
+}
+
+async function callOrchestrator(payload: any): Promise<OrchestratorResult | null> {
+  try {
+    const userContent = JSON.stringify(payload);
+    const raw = await generateChatCompletion({
+      messages: [
+        { role: "system", content: ORCHESTRATOR_PROMPT },
+        { role: "user", content: userContent }
+      ],
+      model: "gpt-4.1-mini"
+    });
+
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    const jsonString = start !== -1 && end !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+    const parsed = JSON.parse(jsonString);
+    return {
+      action: parsed.action as OrchestratorAction,
+      reply: parsed.reply ?? "",
+      slots: parsed.slots ?? {},
+      required_slots: Array.isArray(parsed.required_slots) ? parsed.required_slots : [],
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 1
+    };
+  } catch (err: any) {
+    logger.warn("Orchestrator call failed or returned invalid JSON", { error: err?.message });
+    return null;
+  }
 }
 
 function buildSmalltalkReply(kind: SmalltalkType, lang: "de" | "en", stage: string | null): string {
@@ -497,20 +539,33 @@ async function runOemLookupAndScraping(
     // Wenn der OEM‑Resolver eine Actor/Job‑ID zurückgibt (z.B. Apify runId / tecdoc actor id),
     // speichern wir diese in oem_data / order row, damit man später verifizieren kann,
     // welcher Actor gestartet wurde und ggf. Webhook‑Ergebnisse zuordnen kann.
-    try {
       const extraOemData = {
         oemNumber: oemResult.oemNumber,
         actorRunId: (oemResult as any)?.actorRunId ?? (oemResult as any)?.jobId ?? null,
         raw: (oemResult as any)?.raw ?? null
       };
-      await updateOrderOEM(orderId, {
-        oemStatus: oemResult.success ? "ok" : "error",
-        oemData: extraOemData,
-        oemError: oemResult.success ? null : oemResult.message ?? null
-      });
-    } catch (uErr: any) {
-      logger.warn("Failed to persist OEM actor metadata", { orderId, error: uErr?.message ?? uErr });
-    }
+      let persisted = false;
+      try {
+        if (typeof persistOemMetadata === "function") {
+          persisted = await persistOemMetadata(orderId, {
+            oemStatus: oemResult.success ? "ok" : "error",
+            oemData: extraOemData,
+            oemError: oemResult.success ? null : oemResult.message ?? null
+          });
+        } else if (typeof updateOrderOEM === "function") {
+          await updateOrderOEM(orderId, {
+            oemStatus: oemResult.success ? "ok" : "error",
+            oemData: extraOemData,
+            oemError: oemResult.success ? null : oemResult.message ?? null
+          });
+          persisted = true;
+        }
+      } catch (uErr: any) {
+        logger.warn("Failed to persist OEM actor metadata", { orderId, error: uErr?.message ?? uErr });
+      }
+      if (!persisted) {
+        logger.warn("OEM metadata not persisted", { orderId });
+      }
 
     if (oemResult.success && oemResult.oemNumber) {
       // Starte Scraping. Wenn die Funktion einen Job/Run zurückliefert (z.B. async Actor), speichere auch das.
@@ -519,21 +574,36 @@ async function runOemLookupAndScraping(
         // scrapeResult könnte z.B. { ok: true, offersInserted: 12 } oder { jobId: 'run-xxx' } sein.
         if (scrapeResult && (scrapeResult as any).jobId) {
           try {
-            await updateOrderScrapeTask(orderId, {
-              scrapeTaskId: (scrapeResult as any).jobId,
-              scrapeStatus: "started",
-              scrapeResult: scrapeResult
-            });
+            if (typeof persistScrapeResult === "function") {
+              await persistScrapeResult(orderId, {
+                scrapeTaskId: (scrapeResult as any).jobId,
+                scrapeStatus: "started",
+                scrapeResult: scrapeResult
+              });
+            } else if (typeof updateOrderScrapeTask === "function") {
+              await updateOrderScrapeTask(orderId, {
+                scrapeTaskId: (scrapeResult as any).jobId,
+                scrapeStatus: "started",
+                scrapeResult: scrapeResult
+              });
+            }
           } catch (uErr: any) {
             logger.warn("Failed to persist scrape job id", { orderId, error: uErr?.message ?? uErr });
           }
         } else {
           // falls das Scraping synchron gelaufen ist, können wir optional Status/Result abspeichern
           try {
-            await updateOrderScrapeTask(orderId, {
-              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
-              scrapeResult: scrapeResult ?? null
-            });
+            if (typeof persistScrapeResult === "function") {
+              await persistScrapeResult(orderId, {
+                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+                scrapeResult: scrapeResult ?? null
+              });
+            } else if (typeof updateOrderScrapeTask === "function") {
+              await updateOrderScrapeTask(orderId, {
+                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+                scrapeResult: scrapeResult ?? null
+              });
+            }
           } catch (uErr: any) {
             logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
           }
@@ -546,7 +616,7 @@ async function runOemLookupAndScraping(
         });
         // Auch Fehler beim Starten des Actors persistieren
         try {
-          await updateOrderScrapeTask(orderId, {
+          await persistScrapeResult(orderId, {
             scrapeStatus: "failed",
             scrapeResult: { error: err?.message ?? String(err) }
           });
@@ -625,6 +695,9 @@ async function downloadFromTwilio(mediaUrl: string): Promise<Buffer> {
   const arrayBuffer = await res.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }
+
+// Export helpers for testing
+export { downloadFromTwilio };
 
 export interface VehicleOcrResult {
   make: string | null;
@@ -713,6 +786,9 @@ Fülle unbekannte Felder mit null. rawText soll den gesamten erkannten Text enth
     };
   }
 }
+
+// Export OCR extractor for unit tests to mock behavior
+export { extractVehicleDataFromImage };
 
 function safeParseVehicleJson(text: string): VehicleOcrResult {
   const empty: VehicleOcrResult = {
@@ -1096,12 +1172,123 @@ export async function handleIncomingBotMessage(
       logger.warn("Abuse detection failed", { error: (e as any)?.message });
     }
 
-    // parseUserMessage für Intent/NLU
+    // If user sent an image, try OCR first so orchestrator can use it
+    let ocrResult: any = null;
+    if (hasVehicleImage && Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0) {
+      try {
+        const buf = await downloadFromTwilio(payload.mediaUrls[0]);
+        ocrResult = await extractVehicleDataFromImage(buf);
+        logger.info("Pre-OCR result for orchestrator", { orderId: order.id, ocr: ocrResult });
+      } catch (err: any) {
+        logger.warn("Pre-OCR failed (orchestrator will continue without OCR)", { error: err?.message, orderId: order.id });
+        ocrResult = null;
+      }
+    }
+
+    // Call AI orchestrator as primary decision maker. If it fails, fallback to legacy NLU.
     let parsed: ParsedUserMessage = { intent: "unknown" };
     try {
-      parsed = await parseUserMessage(userText);
+      const orchestratorPayload = {
+        sender: payload.from,
+        orderId: order.id,
+        conversation: {
+          status: order.status,
+          language: order.language,
+          orderData: orderData,
+          lastBotMessage: null
+        },
+        latestMessage: userText,
+        ocr: ocrResult
+      };
+
+      const orch = await callOrchestrator(orchestratorPayload);
+      if (orch) {
+        // Handle simple orchestrator actions directly
+        if (orch.action === "abusive") {
+          const reply = orch.reply || (order.language === "de" ? "Bitte benutze keine Beleidigungen." : "Please refrain from insults.");
+          return { reply, orderId: order.id };
+        }
+
+        if (orch.action === "smalltalk") {
+          // do not change state, just reply
+          return { reply: orch.reply || "", orderId: order.id };
+        }
+
+        // Merge offered slots into order_data
+        const slotsToStore: Record<string, any> = {};
+        for (const [k, v] of Object.entries(orch.slots || {})) {
+          if (v !== undefined && v !== null && v !== "") slotsToStore[k] = v;
+        }
+        if (Object.keys(slotsToStore).length > 0) {
+          try {
+            await updateOrderData(order.id, slotsToStore);
+            orderData = { ...orderData, ...slotsToStore };
+          } catch (err: any) {
+            logger.warn("Failed to persist orchestrator slots", { error: err?.message, orderId: order.id });
+          }
+        }
+
+        if (orch.action === "ask_slot") {
+          return { reply: orch.reply || "", orderId: order.id };
+        }
+
+        if (orch.action === "oem_lookup") {
+          // build parsed minimal object and vehicleOverride
+          const vehicleOverride = {
+            make: orch.slots.make ?? orch.slots.brand ?? undefined,
+            model: orch.slots.model ?? undefined,
+            year: orch.slots.year ?? undefined,
+            engine: orch.slots.engine ?? undefined,
+            vin: orch.slots.vin ?? undefined,
+            hsn: orch.slots.hsn ?? undefined,
+            tsn: orch.slots.tsn ?? undefined
+          };
+
+          const minimalParsed: ParsedUserMessage = {
+            intent: "request_part",
+            normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
+            userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
+            isAutoPart: true,
+            partCategory: orch.slots.partCategory ?? null,
+            position: orch.slots.position ?? null,
+            positionNeeded: Boolean(orch.slots.position)
+          };
+
+          const oemFlow = await runOemLookupAndScraping(
+            order.id,
+            order.language ?? "de",
+            minimalParsed,
+            orderData,
+            orch.slots.requestedPart ?? null,
+            vehicleOverride
+          );
+
+          return { reply: oemFlow.replyText, orderId: order.id };
+        }
+
+        // orch.action === confirm / noop => set parsed from slots and continue legacy flow
+        if (orch.slots && Object.keys(orch.slots).length > 0) {
+          parsed = {
+            intent: "request_part",
+            normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
+            userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
+            isAutoPart: true,
+            partCategory: orch.slots.partCategory ?? null,
+            position: orch.slots.position ?? null,
+            positionNeeded: Boolean(orch.slots.position)
+          } as ParsedUserMessage;
+        }
+      } else {
+        // fallback to legacy parse if orchestrator not available
+        parsed = await parseUserMessage(userText);
+      }
     } catch (err: any) {
-      logger.error("parseUserMessage failed", { error: err?.message });
+      logger.error("Orchestrator flow failed, falling back to legacy NLU", { error: err?.message });
+      try {
+        parsed = await parseUserMessage(userText);
+      } catch (err2: any) {
+        logger.error("parseUserMessage failed in fallback", { error: err2?.message });
+      }
     }
 
     // requestedPart aus Usertext merken und persistieren
@@ -1130,29 +1317,10 @@ export async function handleIncomingBotMessage(
       return { reply, orderId: order.id };
     }
 
-    // Smalltalk: Antworten, State unverändert
-    if (parsed.intent === "smalltalk") {
-      // Use a heuristic to choose reply language but DO NOT persist it or change conversation state.
-      const lang = language ?? detectLanguageFromText(userText) ?? "de";
-
-      let reply =
-        parsed.smalltalkReply ||
-        (lang === "en"
-          ? "Hi! How can I help you with your car parts today?"
-          : "Hi! Wie kann ich dir heute bei Autoteilen helfen?");
-
-      if (nextStatus === "collect_vehicle") {
-        reply += lang === "en"
-          ? " I still need your vehicle details (registration photo or make/model/year)."
-          : " Ich brauche noch deine Fahrzeugdetails (Fahrzeugschein oder Marke/Modell/Baujahr).";
-      } else if (nextStatus === "collect_part") {
-        reply += lang === "en"
-          ? " Tell me which part you need and where (front/rear, left/right)."
-          : " Sag mir bitte, welches Teil du brauchst und wo (vorne/hinten, links/rechts).";
-      }
-
-      return { reply, orderId: order.id };
-    }
+    // Note: smalltalk is handled by the AI orchestrator. We no longer use the legacy smalltalk
+    // branch here to avoid duplicate/conflicting replies. If the orchestrator is unavailable,
+    // the legacy NLU may still produce a smalltalk intent as a fallback, but we choose to
+    // respond with the generic fallback below instead of special-casing smalltalk here.
 
     let replyText = "";
 
@@ -1276,8 +1444,23 @@ export async function handleIncomingBotMessage(
                 );
                 replyText = oemFlow.replyText;
                 nextStatus = oemFlow.nextStatus;
-                // We've handled the rest of this branch, so break out
-                bufferLoop: ;
+
+                // Persist immediate state change and return early so the response uses OCR-driven decision
+                try {
+                  await updateOrder(order.id, {
+                    status: nextStatus,
+                    language,
+                    vehicle_description: vehicleDescription || null,
+                    part_description: partDescription ?? null
+                  });
+                } catch (uErr: any) {
+                  logger.warn("Failed to persist order state after OCR-driven OEM flow", {
+                    orderId: order.id,
+                    error: uErr?.message ?? uErr
+                  });
+                }
+
+                return { reply: replyText, orderId: order.id };
               } else if (missingFieldsAfterOcr.length === 0) {
                 nextStatus = "collect_part";
                 replyText =

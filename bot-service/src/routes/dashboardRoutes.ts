@@ -257,6 +257,39 @@ export function createDashboardRouter(): Router {
     }
   });
 
+  // Merchant settings endpoints (simple read + upsert)
+  router.get('/merchant/settings/:merchantId', async (req: Request, res: Response) => {
+    const merchantId = req.params.merchantId;
+    console.log('[DashboardAPI] GET /dashboard/merchant/settings/:merchantId', { merchantId });
+    try {
+      const { getMerchantSettings } = await import('../services/supabaseService');
+      const settings = await getMerchantSettings(merchantId);
+      if (!settings) return res.status(404).json({ error: 'Merchant settings not found' });
+      return res.status(200).json(settings);
+    } catch (err: any) {
+      console.error('[DashboardAPI] Error fetching merchant settings', err?.message ?? err);
+      return res.status(500).json({ error: 'Failed to fetch merchant settings' });
+    }
+  });
+
+  router.post('/merchant/settings/:merchantId', async (req: Request, res: Response) => {
+    const merchantId = req.params.merchantId;
+    const payload = req.body ?? {};
+    console.log('[DashboardAPI] POST /dashboard/merchant/settings/:merchantId', { merchantId, payload });
+    try {
+      const { upsertMerchantSettings } = await import('../services/supabaseService');
+      const ok = await upsertMerchantSettings(merchantId, {
+        selectedShops: payload.selectedShops,
+        marginPercent: payload.marginPercent
+      });
+      if (!ok) return res.status(500).json({ error: 'Failed to persist merchant settings' });
+      return res.status(200).json({ ok: true });
+    } catch (err: any) {
+      console.error('[DashboardAPI] Error upserting merchant settings', err?.message ?? err);
+      return res.status(500).json({ error: 'Failed to upsert merchant settings' });
+    }
+  });
+
   return router;
 }
 

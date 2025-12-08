@@ -670,14 +670,42 @@ export async function upsertVehicleForOrderFromPartial(
     }
   }
 
-  const { data, error } = await client
-    .from("vehicles")
-    .upsert(payload, { onConflict: "order_id" })
-    .select("*")
-    .maybeSingle();
+  // Try upsert, but be tolerant to schema differences (missing columns). If the DB returns an error
+  // complaining about unknown columns, remove those keys from payload and retry a few times.
+  let attempts = 0;
+  let lastErr: any = null;
+  let data: any = null;
+  while (attempts < 3) {
+    attempts += 1;
+    try {
+      const resp = await client.from("vehicles").upsert(payload, { onConflict: "order_id" }).select("*").maybeSingle();
+      data = resp.data;
+      const err = resp.error;
+      if (err) throw err;
+      lastErr = null;
+      break;
+    } catch (err: any) {
+      lastErr = err;
+      const msg = (err?.message || "") as string;
+      // Look for messages like: Could not find the 'emission_class' column
+      const m = msg.match(/'([^']+)'/);
+      if (m && m[1]) {
+        const col = m[1];
+        // remove occurrences of this column from payload keys
+        // try both snake_case and camelCase variations
+        delete payload[col];
+        const camelKey = col.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+        delete payload[camelKey];
+        // continue to retry without this field
+        continue;
+      }
+      // Unknown error, break and rethrow
+      break;
+    }
+  }
 
-  if (error) {
-    throw new Error(`Failed to insert vehicle: ${error.message}`);
+  if (lastErr) {
+    throw new Error(`Failed to insert vehicle: ${lastErr.message}`);
   }
 
   if (!data) {
@@ -847,3 +875,230 @@ export async function updateOrderScrapeTask(
 
   return data;
 }
+
+/**
+ * Safe wrapper to persist OEM metadata. Returns true on success, false on failure.
+ */
+export async function persistOemMetadata(
+  orderId: string,
+  update: {
+    oemStatus?: string | null;
+    oemError?: string | null;
+    oemData?: any | null;
+  }
+): Promise<boolean> {
+  try {
+    await updateOrderOEM(orderId, update);
+    return true;
+  } catch (err: any) {
+    console.warn("persistOemMetadata failed", { orderId, error: err?.message ?? err });
+    return false;
+  }
+}
+
+/**
+ * Safe wrapper to persist scrape task metadata. Returns true on success, false on failure.
+ */
+export async function persistScrapeResult(
+  orderId: string,
+  update: {
+    scrapeTaskId?: string | null;
+    scrapeStatus?: string | null;
+    scrapeResult?: any | null;
+  }
+): Promise<boolean> {
+  try {
+    await updateOrderScrapeTask(orderId, update);
+    return true;
+  } catch (err: any) {
+    console.warn("persistScrapeResult failed", { orderId, error: err?.message ?? err });
+    return false;
+  }
+}
+
+/**
+ * Merchant settings and margin helpers
+ */
+export interface MerchantSettings {
+  merchantId: string;
+  selectedShops: string[];
+  marginPercent: number; // e.g. 20 for 20%
+}
+
+/**
+ * Try to read merchant settings from the DB. Returns null when not found or on error.
+ * The table `merchant_settings` is expected to have at least: merchant_id, selected_shops (json/array), margin_percent (number)
+ */
+export async function getMerchantSettings(merchantId: string): Promise<MerchantSettings | null> {
+  const client = getClient();
+  try {
+    const { data, error } = await client
+      .from("merchant_settings")
+      .select("*")
+      .eq("merchant_id", merchantId)
+      .single();
+    if (error) {
+      // No rows found
+      if (error.code === "PGRST116") return null;
+      console.warn("getMerchantSettings failed", { merchantId, error: error.message });
+      return null;
+    }
+    if (!data) return null;
+    return {
+      merchantId: data.merchant_id,
+      selectedShops: data.selected_shops ?? [],
+      marginPercent: Number(data.margin_percent ?? 0)
+    };
+  } catch (err: any) {
+    console.warn("getMerchantSettings exception", { merchantId, error: err?.message ?? err });
+    return null;
+  }
+}
+
+/**
+ * Upsert merchant settings. Returns true on success, false on failure.
+ * Uses OnConflict upsert on merchant_id; tolerant to missing table/columns.
+ */
+export async function upsertMerchantSettings(
+  merchantId: string,
+  settings: { selectedShops?: string[]; marginPercent?: number }
+): Promise<boolean> {
+  const client = getClient();
+  const payload: Record<string, any> = { merchant_id: merchantId };
+  if (settings.selectedShops !== undefined) payload.selected_shops = settings.selectedShops;
+  if (settings.marginPercent !== undefined) payload.margin_percent = settings.marginPercent;
+
+  try {
+    const { error } = await client.from("merchant_settings").upsert(payload, { onConflict: "merchant_id" });
+    if (error) throw error;
+    return true;
+  } catch (err: any) {
+    console.warn("upsertMerchantSettings failed", { merchantId, error: err?.message ?? err });
+    return false;
+  }
+}
+
+/**
+ * Apply merchant margin to a list of offers and return annotated offers.
+ * Does not persist anything; purely in-memory transformation used when preparing offers for the end-customer.
+ */
+export function applyMerchantMarginToOffers(
+  offers: Array<{
+    shopName: string;
+    brand?: string | null;
+    price: number;
+    currency?: string;
+    availability?: string | null;
+    deliveryTimeDays?: number | null;
+    productUrl?: string | null;
+    rating?: number | null;
+    isRecommended?: boolean | null;
+  }>,
+  marginPercent: number
+): Array<any> {
+  return offers.map((o) => {
+    const supplierPrice = Number(o.price ?? 0);
+    const finalPrice = Math.round((supplierPrice * (1 + (marginPercent ?? 0) / 100)) * 100) / 100;
+    return {
+      ...o,
+      supplierPrice,
+      priceInclMargin: finalPrice,
+      currency: o.currency ?? "EUR"
+    };
+  });
+}
+
+/**
+ * Create an inquiry entry (dashboard-visible) and persist corresponding shop offers.
+ * - Applies merchant margin (if merchant settings are available)
+ * - Inserts offers via `insertShopOffers` (price will be the price shown to the end-customer)
+ * - Updates order status and order_data to make the inquiry visible in the dashboard
+ *
+ * This function is tolerant: failures in auxiliary persistence (merchant settings, order_data) will be logged
+ * but attempts to persist the primary shop offers. Returns true on overall success (offers inserted), false otherwise.
+ */
+export async function createInquiryAndInsertOffers(
+  orderId: string,
+  merchantId: string | null,
+  oemNumber: string,
+  offers: Array<{
+    shopName: string;
+    brand?: string | null;
+    price: number; // supplier price reported by shop/scraper
+    currency?: string;
+    availability?: string | null;
+    deliveryTimeDays?: number | null;
+    productUrl?: string | null;
+    rating?: number | null;
+    isRecommended?: boolean | null;
+  }>
+): Promise<boolean> {
+  // 1) get merchant settings (if provided)
+  let margin = 0;
+  let selectedShops: string[] | null = null;
+  if (merchantId) {
+    try {
+      const ms = await getMerchantSettings(merchantId);
+      if (ms) {
+        margin = ms.marginPercent ?? 0;
+        selectedShops = ms.selectedShops ?? null;
+      }
+    } catch (err: any) {
+      console.warn("Failed to read merchant settings, proceeding with margin=0", { merchantId, error: err?.message ?? err });
+    }
+  }
+
+  // 2) Optionally filter offers by merchant-selected shops
+  let filteredOffers = offers;
+  if (selectedShops && selectedShops.length > 0) {
+    filteredOffers = offers.filter((o) => selectedShops!.includes(o.shopName));
+  }
+
+  // 3) apply margin in-memory
+  const annotated = applyMerchantMarginToOffers(filteredOffers, margin);
+
+  // 4) prepare payload for DB insertion: use priceInclMargin as the price shown to customer
+  const dbOffers = annotated.map((a) => ({
+    shopName: a.shopName,
+    brand: a.brand ?? null,
+    price: a.priceInclMargin,
+    currency: a.currency ?? "EUR",
+    availability: a.availability ?? null,
+    deliveryTimeDays: a.deliveryTimeDays ?? null,
+    productUrl: a.productUrl ?? null,
+    rating: a.rating ?? null,
+    isRecommended: a.isRecommended ?? null
+  }));
+
+  // 5) try to insert offers
+  try {
+    await insertShopOffers(orderId, oemNumber, dbOffers);
+  } catch (err: any) {
+    console.error("Failed to insert shop offers for inquiry", { orderId, error: err?.message ?? err });
+    return false;
+  }
+
+  // 6) update order status and order_data so dashboard shows the inquiry
+  try {
+    // mark status to await customer confirmation / show_offers
+    await updateOrder(orderId, { status: "await_offer_confirmation" as ConversationStatus });
+  } catch (err: any) {
+    console.warn("Failed to update order status after inserting offers", { orderId, error: err?.message ?? err });
+  }
+
+  try {
+    // add a small inquiry record into order_data for visibility
+    const inquiryMeta = {
+      lastInquiryAt: new Date().toISOString(),
+      lastInquiryOem: oemNumber,
+      lastInquiryMerchant: merchantId ?? null,
+      lastInquiryOfferCount: dbOffers.length
+    } as Record<string, any>;
+    await updateOrderData(orderId, { last_inquiry: inquiryMeta });
+  } catch (err: any) {
+    console.warn("Failed to persist inquiry metadata on order_data", { orderId, error: err?.message ?? err });
+  }
+
+  return true;
+}
+
