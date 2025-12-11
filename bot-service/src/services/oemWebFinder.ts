@@ -60,6 +60,51 @@ async function fetchText(url: string): Promise<string> {
   }
 }
 
+/**
+ * Best-effort Fetch mit Fallback über allorigins (einfacher Proxy), um simple Bot-Blocks zu umgehen.
+ */
+async function fetchTextWithFallback(url: string): Promise<string> {
+  try {
+    return await fetchText(url);
+  } catch {
+    // fallback über allorigins
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    return fetchText(proxyUrl);
+  }
+}
+
+async function aiExtractOemsFromHtml(html: string, ctx: SearchContext): Promise<string[]> {
+  if (!process.env.OPENAI_API_KEY) return [];
+  const prompt = `HTML-Ausschnitt einer Teile-Suche:\n\n${html.slice(0, 12000)}\n\nFahrzeug: ${JSON.stringify(
+    ctx.vehicle
+  )}\nUser-Query: ${ctx.userQuery}\nExtrahiere OEM-Nummern (OE/OEM/MPN) als JSON-Array strings. Nur OEMs, keine Erklärungen.`;
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: "Du extrahierst OEM-Nummern aus HTML." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0
+      })
+    });
+    const data = await res.json();
+    const txt = data?.choices?.[0]?.message?.content || "";
+    const match = txt.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    const arr = JSON.parse(match[0]);
+    return Array.isArray(arr) ? arr.map((v) => normalizeOem(String(v))).filter(Boolean) as string[] : [];
+  } catch {
+    return [];
+  }
+}
+
 // ----------------------------------
 // OpenAI-Helfer: Query-Expansion / Re-Ranking
 // ----------------------------------
@@ -136,9 +181,12 @@ async function searchOemOnPartSouq(ctx: SearchContext): Promise<OemCandidate[]> 
       ? ctx.vehicle.vin
       : [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
     const url = `https://partsouq.com/en/search/all?q=${encodeURIComponent(q)}`;
-    const html = await fetchText(url);
+    const html = await fetchTextWithFallback(url);
     if (html.includes("cf-mitigated") || html.includes("challenge-platform")) return [];
-    const oems = extractOemsFromHtml(html);
+    let oems = extractOemsFromHtml(html);
+    if (!oems.length) {
+      oems = await aiExtractOemsFromHtml(html, ctx);
+    }
     return oems.map((o) => ({ source: "PartSouq", rawValue: o, normalized: o }));
   } catch {
     return [];
@@ -149,13 +197,16 @@ async function searchOemOnAmayama(ctx: SearchContext): Promise<OemCandidate[]> {
   try {
     const q = [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
     const url = `https://www.amayama.com/en/search?q=${encodeURIComponent(q)}`;
-    const html = await fetchText(url);
+    const html = await fetchTextWithFallback(url);
     const inlineJson = html.match(/\"part_number\"\\s*:\\s*\"([A-Z0-9\\-\\.]+)\"/gi) || [];
     const extra = inlineJson
       .map((s) => s.replace(/.*\"part_number\"\\s*:\\s*\"/i, "").replace(/\".*/, ""))
       .map((s) => normalizeOem(s))
       .filter(Boolean) as string[];
-    const oems = [...extractOemsFromHtml(html), ...extra];
+    let oems = [...extractOemsFromHtml(html), ...extra];
+    if (!oems.length) {
+      oems = await aiExtractOemsFromHtml(html, ctx);
+    }
     return oems.map((o) => ({ source: "Amayama", rawValue: o, normalized: o }));
   } catch {
     return [];
@@ -166,7 +217,7 @@ async function searchOemOnAutodocParts(ctx: SearchContext): Promise<OemCandidate
   try {
     const q = [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
     const url = `https://www.autodoc.parts/search?keyword=${encodeURIComponent(q)}`;
-    const html = await fetchText(url);
+    const html = await fetchTextWithFallback(url);
     if (html.includes("Just a moment") && html.includes("challenge-platform")) return [];
     const jsonMatches = html.match(/\"oeNumbers\"\\s*:\\s*\\[(.*?)\\]/gi) || [];
     const extracted: string[] = [];
@@ -174,7 +225,10 @@ async function searchOemOnAutodocParts(ctx: SearchContext): Promise<OemCandidate
       const parts = m.match(/[A-Z0-9\\-\\.]{5,20}/gi);
       if (parts) parts.forEach((p) => extracted.push(p));
     });
-    const oems = [...extractOemsFromHtml(html), ...extracted];
+    let oems = [...extractOemsFromHtml(html), ...extracted];
+    if (!oems.length) {
+      oems = await aiExtractOemsFromHtml(html, ctx);
+    }
     return oems.map((o) => ({ source: "Autodoc.parts", rawValue: o, normalized: o }));
   } catch {
     return [];
@@ -185,7 +239,7 @@ async function searchOemOnSpareto(ctx: SearchContext): Promise<OemCandidate[]> {
   try {
     const q = [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
     const url = `https://www.spareto.com/search?q=${encodeURIComponent(q)}`;
-    const html = await fetchText(url);
+    const html = await fetchTextWithFallback(url);
     const ldJson = html.match(/application\/ld\+json">([\s\S]*?)<\/script>/i);
     const extracted: string[] = [];
     if (ldJson && ldJson[1]) {
@@ -200,7 +254,10 @@ async function searchOemOnSpareto(ctx: SearchContext): Promise<OemCandidate[]> {
         extracted.push(v);
       });
     }
-    const oems = extractOemsFromHtml(html).concat(extracted.map((e) => normalizeOem(e)!).filter(Boolean));
+    let oems = extractOemsFromHtml(html).concat(extracted.map((e) => normalizeOem(e)!).filter(Boolean));
+    if (!oems.length) {
+      oems = await aiExtractOemsFromHtml(html, ctx);
+    }
     return oems.map((o) => ({ source: "Spareto", rawValue: o, normalized: o }));
   } catch {
     return [];
@@ -212,8 +269,11 @@ async function searchOemOnSite5(ctx: SearchContext): Promise<OemCandidate[]> {
     // Beispiel MegaZip; ggf. Login nötig -> nur Struktur als Beispiel
     const q = ctx.vehicle.vin ? ctx.vehicle.vin : [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
     const url = `https://www.megazip.net/zapchasti-dlya-avtomobiley?q=${encodeURIComponent(q)}`;
-    const html = await fetchText(url);
-    const oems = extractOemsFromHtml(html);
+    const html = await fetchTextWithFallback(url);
+    let oems = extractOemsFromHtml(html);
+    if (!oems.length) {
+      oems = await aiExtractOemsFromHtml(html, ctx);
+    }
     return oems.map((o) => ({ source: "MegaZip", rawValue: o, normalized: o }));
   } catch {
     return [];

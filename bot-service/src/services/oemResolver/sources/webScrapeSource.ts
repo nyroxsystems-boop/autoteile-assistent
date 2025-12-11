@@ -24,7 +24,8 @@ export const webScrapeSource: OEMSource = {
       userQuery:
         suspected ||
         req.partQuery.rawText ||
-        [req.vehicle.make, req.vehicle.model, req.partQuery.normalizedCategory].filter(Boolean).join(" ")
+        [req.vehicle.make, req.vehicle.model, req.partQuery.normalizedCategory].filter(Boolean).join(" "),
+      suspectedNumber: suspected ?? undefined
     };
 
     const result = await findBestOemForVehicle(ctx, false);
