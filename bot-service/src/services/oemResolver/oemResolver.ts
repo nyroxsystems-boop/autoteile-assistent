@@ -9,6 +9,7 @@ import { webScrapeSource } from "./sources/webScrapeSource";
 import { llmHeuristicSource } from "./sources/llmHeuristicSource";
 import { clampConfidence } from "./sources/baseSource";
 import { backsearchOEM } from "./backsearch";
+import { filterByPartMatch } from "./sources/partMatchHelper";
 
 const SOURCES = [
   cacheSource,
@@ -91,7 +92,10 @@ export async function resolveOEM(req: OEMResolverRequest): Promise<OEMResolverRe
 
   results.forEach((arr) => allCandidates.push(...arr));
 
-  const merged = mergeCandidates(allCandidates);
+  // Teil-Plausibilität prüfen (verwirft OEMs, die nicht zum Teiltext passen)
+  const filtered = await filterByPartMatch(allCandidates, req);
+
+  const merged = mergeCandidates(filtered);
 
   // Boost confidence if vehicle meta matches exactly (kw/year) in candidate meta
   for (const c of merged) {

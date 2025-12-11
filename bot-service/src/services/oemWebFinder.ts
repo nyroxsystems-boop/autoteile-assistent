@@ -18,6 +18,7 @@ export interface VehicleData {
 export interface SearchContext {
   vehicle: VehicleData;
   userQuery: string; // z. B. "Bremsscheiben vorne"
+  suspectedNumber?: string | null; // optional direkte OEM/Artikelnummer
 }
 
 export interface OemCandidate {
@@ -303,7 +304,9 @@ export async function fallbackResolveOem(ctx: SearchContext): Promise<string | n
 export async function findBestOemForVehicle(ctx: SearchContext, useFallback = true): Promise<BestOemResult> {
   // Query-Expansion über OpenAI
   const extraQueries = await openAiSuggestQueries(ctx);
-  const queryVariants = [ctx.userQuery, ...extraQueries].filter(Boolean);
+  const queryVariants = [ctx.suspectedNumber || undefined, ctx.userQuery, ...extraQueries].filter(
+    (v): v is string => typeof v === "string" && v.length > 0
+  );
 
   const scrapeOnce = async (userQuery: string) => {
     const subCtx = { ...ctx, userQuery };
