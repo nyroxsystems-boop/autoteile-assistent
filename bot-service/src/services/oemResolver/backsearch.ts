@@ -9,6 +9,7 @@ type BacksearchResult = {
 
 const RAPID_KEY = process.env.TECDOC_API_KEY || process.env.RAPIDAPI_KEY || "";
 const RAPID_HOST = process.env.TECDOC_RAPID_API_HOST || process.env.RAPIDAPI_HOST || "tecdoc-catalog.p.rapidapi.com";
+const BACKSEARCH_TIMEOUT_MS = 8000;
 
 /**
  * Validate a found OEM by re-querying TecDoc (Rapid) and a lightweight web lookup (7zap).
@@ -21,14 +22,18 @@ export async function backsearchOEM(oem: string, req: OEMResolverRequest): Promi
   if (RAPID_KEY) {
     const url = `https://${RAPID_HOST}/articles-oem/search-by-article-oem-no/lang-id/4/article-oem-no/${encodeURIComponent(oem)}`;
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), BACKSEARCH_TIMEOUT_MS);
       const res = await fetch(url, {
         method: "GET",
+        signal: controller.signal,
         headers: {
           "x-rapidapi-key": RAPID_KEY,
           "x-rapidapi-host": RAPID_HOST,
           Accept: "application/json"
         }
       });
+      clearTimeout(timer);
       if (res.ok) {
         const json: any = await res.json();
         const items = Array.isArray(json?.data) ? json.data : Array.isArray(json?.results) ? json.results : [];
@@ -48,7 +53,10 @@ export async function backsearchOEM(oem: string, req: OEMResolverRequest): Promi
   // Simple web check on 7zap (HTML presence of OEM string)
   try {
     const sevenZapUrl = `https://7zap.com/en/search/?keyword=${encodeURIComponent(oem)}`;
-    const res = await fetch(sevenZapUrl, { method: "GET" });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), BACKSEARCH_TIMEOUT_MS);
+    const res = await fetch(sevenZapUrl, { method: "GET", signal: controller.signal });
+    clearTimeout(timer);
     if (res.ok) {
       const html = await res.text();
       if (html.toUpperCase().includes(oem.toUpperCase())) {

@@ -38,16 +38,25 @@ export interface BestOemResult {
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
+const SCRAPE_TIMEOUT_MS = 8000;
+
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; OEMFinder/1.0; +https://autoteile-assistent.local)",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en,de;q=0.9"
-    }
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res.text();
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; OEMFinder/1.0; +https://autoteile-assistent.local)",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en,de;q=0.9"
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.text();
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 // ----------------------------------
