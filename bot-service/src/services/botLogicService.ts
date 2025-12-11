@@ -14,10 +14,11 @@ import {
   getOrderById,
   updateOrderStatus,
   persistScrapeResult,
-  updateOrderScrapeTask
+  updateOrderScrapeTask,
+  listActiveOrdersByContact
 } from "./supabaseService";
 import { determineRequiredFields } from "./oemRequiredFieldsService";
-import { resolveOEM } from "./oemService";
+import { resolveOEMForOrder } from "./oemService";
 import { logger } from "../utils/logger";
 import { scrapeOffersForOrder } from "./scrapingService";
 import { GENERAL_QA_SYSTEM_PROMPT } from "../prompts/generalQaPrompt";
@@ -26,6 +27,7 @@ import { COLLECT_PART_BRAIN_PROMPT } from "../prompts/collectPartBrainPrompt";
 import { fetchWithTimeoutAndRetry } from "../utils/httpClient";
 import { ORCHESTRATOR_PROMPT } from "../prompts/orchestratorPrompt";
 import { generateChatCompletion } from "./openAiService";
+import fs from "fs/promises";
 
 // KI-Client für NLU
 const client = new OpenAI({
@@ -226,6 +228,10 @@ function detectLanguageFromText(text: string): "de" | "en" | null {
   return null;
 }
 
+function needsVehicleDocumentHint(order: any): boolean {
+  return order?.status === "choose_language" || order?.status === "collect_vehicle";
+}
+
 function detectSmalltalk(text: string): SmalltalkType | null {
   const t = text?.toLowerCase() ?? "";
   if (!t) return null;
@@ -237,6 +243,36 @@ function detectSmalltalk(text: string): SmalltalkType | null {
   if (thanks.some((w) => t.includes(w))) return "thanks";
   if (botQuestions.some((b) => t.includes(b))) return "bot_question";
   return null;
+}
+
+async function verifyOemWithAi(params: {
+  vehicle: any;
+  part: string;
+  oem: string;
+  language: "de" | "en";
+}): Promise<boolean> {
+  if (!process.env.OPENAI_API_KEY) return true;
+  try {
+    const prompt =
+      "Prüfe, ob die OEM-Nummer zum Fahrzeug und Teil plausibel ist. Antworte NUR mit JSON: {\"ok\":true|false,\"reason\":\"...\"}.\n" +
+      `Fahrzeug: ${JSON.stringify(params.vehicle)}\nTeil: ${params.part}\nOEM: ${params.oem}\n` +
+      "Setze ok=false nur wenn OEM offensichtlich nicht zum Fahrzeug/Teil passen kann.";
+
+    const resp = await client.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0
+    });
+    const raw = resp.choices[0]?.message?.content ?? "";
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    const jsonString = start !== -1 && end !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+    const parsed = JSON.parse(jsonString);
+    return parsed.ok !== false;
+  } catch (err: any) {
+    logger.warn("OEM AI verification skipped", { error: err?.message });
+    return true;
+  }
 }
 
 /**
@@ -401,7 +437,8 @@ function buildVehicleFollowUpQuestion(missingFields: string[], lang: "de" | "en"
     engine: "Welche Motorisierung ist verbaut (kW oder Motorkennbuchstabe)?",
     vin: "Hast du die Fahrgestellnummer (VIN) für mich?",
     hsn: "Hast du die HSN (Feld 2.1 im Fahrzeugschein)?",
-    tsn: "Hast du die TSN (Feld 2.2 im Fahrzeugschein)?"
+    tsn: "Hast du die TSN (Feld 2.2 im Fahrzeugschein)?",
+    vin_or_hsn_tsn_or_engine: "Hast du VIN oder HSN/TSN oder die Motorisierung (kW/MKB)?"
   };
 
   const qEn: Record<string, string> = {
@@ -411,7 +448,8 @@ function buildVehicleFollowUpQuestion(missingFields: string[], lang: "de" | "en"
     engine: "Which engine is installed (kW or engine code)?",
     vin: "Do you have the VIN (vehicle identification number)?",
     hsn: "Do you have the HSN (field 2.1 on the registration)?",
-    tsn: "Do you have the TSN (field 2.2 on the registration)?"
+    tsn: "Do you have the TSN (field 2.2 on the registration)?",
+    vin_or_hsn_tsn_or_engine: "Do you have VIN or HSN/TSN or at least the engine (kW/engine code)?"
   };
 
   const key = missingFields[0];
@@ -499,7 +537,18 @@ async function runOemLookupAndScraping(
   orderData: any,
   partDescription: string | null,
   // Optional override vehicle (e.g. OCR result) — used when DB upsert failed but OCR provided enough data
-  vehicleOverride?: { make?: string; model?: string; year?: number; engine?: string; vin?: string; hsn?: string; tsn?: string }
+  vehicleOverride?: {
+    make?: string;
+    model?: string;
+    year?: number;
+    engine?: string;
+    engineKw?: number;
+    vin?: string;
+    hsn?: string;
+    tsn?: string;
+    fuelType?: string;
+    emissionClass?: string;
+  }
 ): Promise<{ replyText: string; nextStatus: ConversationStatus }> {
   const vehicle = vehicleOverride ?? (await getVehicleForOrder(orderId));
   const engineVal = (vehicle as any)?.engineCode ?? (vehicle as any)?.engine ?? undefined;
@@ -508,6 +557,7 @@ async function runOemLookupAndScraping(
     model: (vehicle as any)?.model ?? undefined,
     year: (vehicle as any)?.year ?? undefined,
     engine: engineVal,
+    engineKw: (vehicle as any)?.engineKw ?? undefined,
     vin: (vehicle as any)?.vin ?? undefined,
     hsn: (vehicle as any)?.hsn ?? undefined,
     tsn: (vehicle as any)?.tsn ?? undefined
@@ -534,44 +584,47 @@ async function runOemLookupAndScraping(
     (language === "en" ? "the part you mentioned" : "das genannte Teil");
 
   try {
-    const oemResult = await resolveOEM(vehicleForOem, partText);
+    const oemResult = await resolveOEMForOrder(
+      orderId,
+      {
+        make: vehicleForOem.make ?? null,
+        model: vehicleForOem.model ?? null,
+        year: vehicleForOem.year ?? null,
+        engine: vehicleForOem.engine ?? null,
+        engineKw: (vehicle as any)?.engineKw ?? null,
+        vin: vehicleForOem.vin ?? null,
+        hsn: vehicleForOem.hsn ?? null,
+        tsn: vehicleForOem.tsn ?? null
+      },
+      partText
+    );
 
-    // Wenn der OEM‑Resolver eine Actor/Job‑ID zurückgibt (z.B. Apify runId / tecdoc actor id),
-    // speichern wir diese in oem_data / order row, damit man später verifizieren kann,
-    // welcher Actor gestartet wurde und ggf. Webhook‑Ergebnisse zuordnen kann.
-      const extraOemData = {
-        oemNumber: oemResult.oemNumber,
-        actorRunId: (oemResult as any)?.actorRunId ?? (oemResult as any)?.jobId ?? null,
-        raw: (oemResult as any)?.raw ?? null
-      };
-      let persisted = false;
+    try {
+      await updateOrderData(orderId, {
+        oemNumber: oemResult.primaryOEM ?? null,
+        oemConfidence: oemResult.overallConfidence ?? null,
+        oemNotes: oemResult.notes ?? null,
+        oemCandidates: oemResult.candidates ?? [],
+        oemTecdocPartsouq: oemResult.tecdocPartsouqResult ?? null
+      });
       try {
-        if (typeof persistOemMetadata === "function") {
-          persisted = await persistOemMetadata(orderId, {
-            oemStatus: oemResult.success ? "ok" : "error",
-            oemData: extraOemData,
-            oemError: oemResult.success ? null : oemResult.message ?? null
-          });
-        } else if (typeof updateOrderOEM === "function") {
-          await updateOrderOEM(orderId, {
-            oemStatus: oemResult.success ? "ok" : "error",
-            oemData: extraOemData,
-            oemError: oemResult.success ? null : oemResult.message ?? null
-          });
-          persisted = true;
-        }
-      } catch (uErr: any) {
-        logger.warn("Failed to persist OEM actor metadata", { orderId, error: uErr?.message ?? uErr });
+        await updateOrderOEM(orderId, {
+          oemStatus: oemResult.primaryOEM ? "resolved" : "not_found",
+          oemError: oemResult.primaryOEM ? null : oemResult.notes ?? null,
+          oemData: oemResult,
+          oemNumber: oemResult.primaryOEM ?? null
+        });
+      } catch (err: any) {
+        logger.warn("Failed to persist OEM fields", { orderId, error: err?.message });
       }
-      if (!persisted) {
-        logger.warn("OEM metadata not persisted", { orderId });
-      }
+    } catch (err: any) {
+      logger.warn("Failed to persist OEM resolver output", { orderId, error: err?.message });
+    }
 
-    if (oemResult.success && oemResult.oemNumber) {
-      // Starte Scraping. Wenn die Funktion einen Job/Run zurückliefert (z.B. async Actor), speichere auch das.
+    if (oemResult.primaryOEM && oemResult.overallConfidence >= 0.7) {
+      const cautious = oemResult.overallConfidence < 0.9;
       try {
-        const scrapeResult = await scrapeOffersForOrder(orderId, oemResult.oemNumber);
-        // scrapeResult könnte z.B. { ok: true, offersInserted: 12 } oder { jobId: 'run-xxx' } sein.
+        const scrapeResult = await scrapeOffersForOrder(orderId, oemResult.primaryOEM);
         if (scrapeResult && (scrapeResult as any).jobId) {
           try {
             if (typeof persistScrapeResult === "function") {
@@ -590,65 +643,58 @@ async function runOemLookupAndScraping(
           } catch (uErr: any) {
             logger.warn("Failed to persist scrape job id", { orderId, error: uErr?.message ?? uErr });
           }
-        } else {
-          // falls das Scraping synchron gelaufen ist, können wir optional Status/Result abspeichern
-          try {
-            if (typeof persistScrapeResult === "function") {
-              await persistScrapeResult(orderId, {
-                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
-                scrapeResult: scrapeResult ?? null
-              });
-            } else if (typeof updateOrderScrapeTask === "function") {
-              await updateOrderScrapeTask(orderId, {
-                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
-                scrapeResult: scrapeResult ?? null
-              });
-            }
-          } catch (uErr: any) {
-            logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
-          }
-        }
-      } catch (err: any) {
-        logger.error("Auto-scraping failed after OEM resolution", {
-          error: err?.message,
-          orderId,
-          oemNumber: oemResult.oemNumber
-        });
-        // Auch Fehler beim Starten des Actors persistieren
+      } else {
         try {
-          await persistScrapeResult(orderId, {
-            scrapeStatus: "failed",
-            scrapeResult: { error: err?.message ?? String(err) }
-          });
-        } catch {}
+          if (typeof persistScrapeResult === "function") {
+            await persistScrapeResult(orderId, {
+              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+              scrapeResult: scrapeResult ?? null
+            });
+          } else if (typeof updateOrderScrapeTask === "function") {
+            await updateOrderScrapeTask(orderId, {
+              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+              scrapeResult: scrapeResult ?? null
+            });
+          }
+        } catch (uErr: any) {
+          logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
+        }
       }
 
-      logger.info("OEM lookup finished in bot flow", {
-        orderId,
-        success: oemResult.success,
-        oemNumber: oemResult.oemNumber ?? null,
-        message: oemResult.message ?? null
-      });
+      const cautionNote =
+        cautious && language === "de"
+          ? " (bitte kurz prüfen)"
+          : cautious && language === "en"
+            ? " (please double-check)"
+            : "";
 
+      const reply =
+        language === "en"
+          ? `I found a suitable product and am checking offers now.${cautionNote}`
+          : `Ich habe ein passendes Produkt gefunden und prüfe Angebote.${cautionNote}`;
       return {
-        replyText:
-          language === "en"
-            ? "Perfect, I’ve identified the right part for your car. I’m now checking different shops for suitable offers."
-            : "Perfekt, ich habe das passende Teil für dein Fahrzeug gefunden. Ich prüfe jetzt verschiedene Shops auf passende Angebote.",
+        replyText: reply,
         nextStatus: "show_offers"
       };
-    } else {
-      // Falls resolveOEM nicht erfolgreich war, ensure we persist error details (already handled above),
-      // und frage gezielt nach mehr Fahrzeugdaten.
-      // (updateOrderOEM wurde oben bereits mit oemStatus=error gefüllt, falls nötig)
-      return {
-        replyText:
-          language === "en"
-            ? "I couldn't identify the right part yet. Could you share the engine code or more vehicle details?"
-            : "Ich konnte das passende Teil noch nicht bestimmen. Kannst du mir den Motorkennbuchstaben oder weitere Fahrzeugdaten schicken?",
-        nextStatus: "collect_vehicle"
-      };
+      } catch (err: any) {
+        logger.error("Scrape after OEM failed", { error: err?.message, orderId });
+        return {
+          replyText:
+            language === "en"
+              ? "I found a product match but fetching offers failed. I’ll ask a colleague."
+              : "Ich habe ein passendes Produkt, aber die Angebotssuche ist fehlgeschlagen. Ich gebe das an einen Kollegen weiter.",
+          nextStatus: "collect_part"
+        };
+      }
     }
+
+    return {
+      replyText:
+        language === "en"
+          ? "I’m not fully confident about the product yet. I’ll hand this to a colleague."
+          : "Ich bin mir beim Produkt nicht sicher. Ich gebe das an einen Kollegen weiter.",
+      nextStatus: "collect_part"
+    };
   } catch (err: any) {
     logger.error("resolveOEM failed", { error: err?.message, orderId });
     return {
@@ -674,6 +720,16 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
 async function downloadFromTwilio(mediaUrl: string): Promise<Buffer> {
+  // Allow local dev/test without Twilio by accepting data: and file: URLs
+  if (mediaUrl.startsWith("data:")) {
+    const base64 = mediaUrl.substring(mediaUrl.indexOf(",") + 1);
+    return Buffer.from(base64, "base64");
+  }
+  if (mediaUrl.startsWith("file:")) {
+    const filePath = mediaUrl.replace("file://", "");
+    return fs.readFile(filePath);
+  }
+
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     throw new Error("Missing Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
   }
@@ -926,12 +982,22 @@ function determineMissingVehicleFields(vehicle: any): string[] {
   const missing: string[] = [];
   if (!vehicle?.make) missing.push("make");
   if (!vehicle?.model) missing.push("model");
+  if (!vehicle?.year) missing.push("year");
   const hasVin = !!vehicle?.vin;
   const hasHsnTsn = !!vehicle?.hsn && !!vehicle?.tsn;
-  if (!hasVin && !hasHsnTsn) {
-    missing.push("vin_or_hsn_tsn");
+  const hasPower = !!vehicle?.engine || !!vehicle?.engineKw;
+  if (!hasVin && !hasHsnTsn && !hasPower) {
+    missing.push("vin_or_hsn_tsn_or_engine");
   }
   return missing;
+}
+
+function isVehicleSufficientForOem(vehicle: any): boolean {
+  if (!vehicle) return false;
+  const hasBasics = !!vehicle.make && !!vehicle.model && !!vehicle.year;
+  const hasId = !!vehicle.vin || (!!vehicle.hsn && !!vehicle.tsn);
+  const hasPower = vehicle.engine || vehicle.engineKw;
+  return hasBasics && (hasId || hasPower);
 }
 
 // ------------------------------
@@ -1089,6 +1155,35 @@ function sanitizeText(input: string, maxLen = 500): string {
   return trimmed.replace(/[\u0000-\u001F\u007F]/g, " ");
 }
 
+type MessageIntent = "new_order" | "order_question" | "unknown";
+function detectIntent(text: string, hasVehicleImage: boolean): MessageIntent {
+  if (hasVehicleImage) return "new_order";
+  const t = text.toLowerCase();
+  const questionKeywords = [
+    "liefer",
+    "zustellung",
+    "wann",
+    "abholung",
+    "abholen",
+    "zahlen",
+    "zahlung",
+    "vorkasse",
+    "status",
+    "wo bleibt",
+    "retoure",
+    "liefertermin",
+    "tracking"
+  ];
+  if (questionKeywords.some((k) => t.includes(k))) return "order_question";
+  return "unknown";
+}
+
+function shortOrderLabel(o: { id: string; vehicle_description?: string | null; part_description?: string | null }) {
+  const idShort = o.id.slice(0, 8);
+  const vehicle = o.vehicle_description || o.part_description || "Anfrage";
+  return `${idShort} (${vehicle.slice(0, 40)})`;
+}
+
 // ------------------------------
 // Hauptlogik – zustandsbasierter Flow
 // ------------------------------
@@ -1096,15 +1191,40 @@ export async function handleIncomingBotMessage(
   payload: BotMessagePayload
 ): Promise<{ reply: string; orderId: string }> {
   return withConversationLock(payload.from, async () => {
-    const userText = sanitizeText(payload.text || "", 1000);
-    const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
-    const vehicleImageNote =
-      hasVehicleImage && payload.mediaUrls
-        ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
-        : null;
+  const userText = sanitizeText(payload.text || "", 1000);
+  const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
+  const vehicleImageNote =
+    hasVehicleImage && payload.mediaUrls
+      ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
+      : null;
+
+    // Intent + mögliche offene Orders vor dem Erstellen ermitteln
+    const intent: MessageIntent = detectIntent(userText, hasVehicleImage);
+    const activeOrders = await listActiveOrdersByContact(payload.from);
+
+    // Falls Frage und mehrere offene Tickets → Auswahl erfragen
+    if (intent === "order_question" && activeOrders.length > 1 && !payload.orderId) {
+      const options = activeOrders.slice(0, 3).map(shortOrderLabel).join(" | ");
+      return {
+        reply:
+          "Zu welcher Anfrage hast du die Frage? Bitte nenn die Ticket-ID.\nOptionen: " +
+          options,
+        orderId: activeOrders[0].id
+      };
+    }
+
+    // Ziel-Order bestimmen
+    let forceNewOrder = false;
+    if (intent === "new_order") {
+      // neue Bestellung erzwingen, wenn Bild oder klar neuer Kontext
+      forceNewOrder = hasVehicleImage || !activeOrders.length;
+    }
+
+    // Wenn wir bewusst neu anlegen wollen, nicht automatisch die letzte offene Order wählen
+    let orderForFlowId: string | undefined = payload.orderId ?? (forceNewOrder ? undefined : activeOrders[0]?.id);
 
     // Order laden oder erstellen
-    const order = await findOrCreateOrder(payload.from, payload.orderId ?? null);
+    const order = await findOrCreateOrder(payload.from, orderForFlowId ?? null, { forceNew: forceNewOrder });
     logger.info("BotFlow start", {
       from: payload.from,
       orderId: order.id,
@@ -1211,7 +1331,15 @@ export async function handleIncomingBotMessage(
 
         if (orch.action === "smalltalk") {
           // do not change state, just reply
-          return { reply: orch.reply || "", orderId: order.id };
+          let reply = orch.reply || "";
+          if (needsVehicleDocumentHint(order)) {
+            const docHint =
+              order.language === "en"
+                ? "Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Falls nicht möglich: Marke, Modell, Baujahr und VIN oder HSN/TSN."
+                : "Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Falls nicht möglich: Marke, Modell, Baujahr und VIN oder HSN/TSN.";
+            reply = reply ? `${reply} ${docHint}` : docHint;
+          }
+          return { reply, orderId: order.id };
         }
 
         // Merge offered slots into order_data
@@ -1229,6 +1357,41 @@ export async function handleIncomingBotMessage(
         }
 
         if (orch.action === "ask_slot") {
+          const vehicleCandidate = {
+            make: orch.slots.make ?? ocrResult?.make ?? orderData?.make ?? null,
+            model: orch.slots.model ?? ocrResult?.model ?? orderData?.model ?? null,
+            year: orch.slots.year ?? ocrResult?.year ?? orderData?.year ?? null,
+            engine: orch.slots.engine ?? orch.slots.engineCode ?? ocrResult?.engine ?? null,
+            engineKw: orch.slots.engineKw ?? ocrResult?.engineKw ?? null,
+            vin: orch.slots.vin ?? ocrResult?.vin ?? null,
+            hsn: orch.slots.hsn ?? ocrResult?.hsn ?? null,
+            tsn: orch.slots.tsn ?? ocrResult?.tsn ?? null
+          };
+
+          const partCandidate =
+            orch.slots.requestedPart ??
+            orch.slots.part ??
+            orderData?.requestedPart ??
+            orderData?.partText ??
+            (userText && userText.length > 0 ? userText : null);
+
+          if (isVehicleSufficientForOem(vehicleCandidate) && partCandidate) {
+            const oemFlow = await runOemLookupAndScraping(
+              order.id,
+              language ?? "de",
+              {
+                intent: "request_part",
+                normalizedPartName: partCandidate,
+                userPartText: partCandidate,
+                isAutoPart: true
+              } as ParsedUserMessage,
+              orderData,
+              partCandidate,
+              vehicleCandidate
+            );
+            return { reply: oemFlow.replyText, orderId: order.id };
+          }
+
           return { reply: orch.reply || "", orderId: order.id };
         }
 
@@ -1411,7 +1574,12 @@ export async function handleIncomingBotMessage(
               }
 
               try {
-                await updateOrderData(order.id, { vehicleOcrRawText: ocr.rawText ?? "" });
+                await updateOrderData(order.id, {
+                  vehicleOcrRawText: ocr.rawText ?? "",
+                  vehicleEngineKw: ocr.engineKw ?? null,
+                  vehicleFuelType: ocr.fuelType ?? null,
+                  vehicleEmissionClass: ocr.emissionClass ?? null
+                });
               } catch (err: any) {
                 logger.error("Failed to store vehicle OCR raw text", { error: err?.message, orderId: order.id });
               }
@@ -1585,6 +1753,7 @@ export async function handleIncomingBotMessage(
           model: vehicle?.model,
           year: vehicle?.year,
           engine: vehicle?.engineCode,
+          engineKw: (vehicle as any)?.engineKw,
           vin: vehicle?.vin,
           hsn: vehicle?.hsn,
           tsn: vehicle?.tsn

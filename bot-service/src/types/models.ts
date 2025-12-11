@@ -34,6 +34,9 @@ export interface Order {
   requestedPartName: string; // z.B. "Bremssattel vorne links"
 
   oemNumber?: string | null;
+  oemStatus?: string | null;
+  oemError?: string | null;
+  oemData?: any | null;
   status: OrderStatus;
 
   matchConfidence?: number | null; // 0–1; wie sicher ist das Matching

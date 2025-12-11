@@ -123,6 +123,9 @@ export async function insertOrder(partial: {
     vehicleId: data.vehicle_id,
     requestedPartName: data.requested_part_name,
     oemNumber: data.oem_number,
+    oemStatus: data.oem_status,
+    oemError: data.oem_error,
+    oemData: data.oem_data,
     status: data.status,
     matchConfidence: data.match_confidence,
     orderData: data.order_data,
@@ -196,6 +199,9 @@ export async function listOrders(limit = 50): Promise<LegacyOrder[]> {
       vehicleId: row.vehicle_id,
       requestedPartName: row.requested_part_name,
       oemNumber: row.oem_number,
+      oemStatus: row.oem_status,
+      oemError: row.oem_error,
+      oemData: row.oem_data,
       status: row.status,
       matchConfidence: row.match_confidence,
       orderData: row.order_data,
@@ -208,8 +214,13 @@ export async function listOrders(limit = 50): Promise<LegacyOrder[]> {
 /**
  * Finds an existing order or creates a new one for a given sender.
  */
-export async function findOrCreateOrder(from: string, orderId?: string | null): Promise<Order> {
+export async function findOrCreateOrder(
+  from: string,
+  orderId?: string | null,
+  opts?: { forceNew?: boolean }
+): Promise<Order> {
   const client = getClient();
+  const forceNew = opts?.forceNew === true;
 
   // 1) Wenn orderId angegeben: versuchen, genau diese Order zu laden
   if (orderId) {
@@ -224,21 +235,25 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
   }
 
   // 2) Offene Order für diesen Absender suchen (nur aktive Status)
-  const { data: rows, error: searchError } = await client
-    .from("orders")
-    .select("*")
-    .eq("customer_contact", from)
-    .in("status", ACTIVE_CONVERSATION_STATUSES)
-    .order("created_at", { ascending: false })
-    .limit(1);
+  let rows: any[] = [];
+  if (!forceNew) {
+    const { data: searchRows, error: searchError } = await client
+      .from("orders")
+      .select("*")
+      .eq("customer_contact", from)
+      .in("status", ACTIVE_CONVERSATION_STATUSES)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-  if (searchError) {
-    console.error("Failed to search existing order", { error: searchError.message, from });
-    throw new Error("Failed to find or create order");
-  }
+    if (searchError) {
+      console.error("Failed to search existing order", { error: searchError.message, from });
+      throw new Error("Failed to find or create order");
+    }
 
-  if (rows && rows.length > 0) {
-    return mapRowToConversationOrder(rows[0]);
+    rows = searchRows || [];
+    if (rows && rows.length > 0) {
+      return mapRowToConversationOrder(rows[0]);
+    }
   }
 
   // 3) Keine offene Order gefunden → neue anlegen
@@ -261,6 +276,25 @@ export async function findOrCreateOrder(from: string, orderId?: string | null): 
   }
 
   return mapRowToConversationOrder(created);
+}
+
+/**
+ * Listet alle aktiven Orders zu einem Kontakt.
+ */
+export async function listActiveOrdersByContact(from: string): Promise<Order[]> {
+  const client = getClient();
+  const { data, error } = await client
+    .from("orders")
+    .select("*")
+    .eq("customer_contact", from)
+    .in("status", ACTIVE_CONVERSATION_STATUSES)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list active orders: ${error.message}`);
+  }
+
+  return (data || []).map((row: any) => mapRowToConversationOrder(row));
 }
 
 /**
@@ -427,6 +461,7 @@ export async function insertShopOffers(
     availability: o.availability ?? null,
     delivery_time_days: o.deliveryTimeDays ?? null,
     product_url: o.productUrl ?? null,
+    url: o.productUrl ?? null, // Compatibility: some DBs may use "url" instead of "product_url"
     rating: o.rating ?? null,
     is_recommended: o.isRecommended ?? null
   }));
@@ -452,7 +487,7 @@ export async function insertShopOffers(
       currency: row.currency,
       availability: row.availability,
       deliveryTimeDays: row.delivery_time_days,
-      productUrl: row.product_url,
+      productUrl: row.product_url ?? row.url ?? null,
       rating: row.rating != null ? Number(row.rating) : null,
       isRecommended: row.is_recommended
     })) ?? [];
@@ -796,26 +831,47 @@ export async function updateOrderOEM(
     oemStatus?: string | null;
     oemError?: string | null;
     oemData?: any | null;
+    oemNumber?: string | null;
   }
 ) {
   const client = getClient();
 
-  const { data, error } = await client
-    .from("orders")
-    .update({
-      oem_status: update.oemStatus ?? null,
-      oem_error: update.oemError ?? null,
-      oem_data: update.oemData ?? null
-    })
-    .eq("id", orderId)
-    .select("*")
-    .single();
+  let payload: Record<string, any> = {
+    oem_status: update.oemStatus ?? null,
+    oem_error: update.oemError ?? null,
+    oem_data: update.oemData ?? null,
+    oem_number: update.oemNumber ?? null
+  };
 
-  if (error) {
-    throw new Error(`Failed to update OEM fields: ${error.message}`);
+  let attempts = 0;
+  let lastError: any = null;
+  while (attempts < 3) {
+    attempts += 1;
+    if (Object.keys(payload).length === 0) {
+      return null;
+    }
+    const { data, error } = await client.from("orders").update(payload).eq("id", orderId).select("*").single();
+    if (!error) {
+      appendStatusLog(orderId, {
+        type: "oem",
+        status: update.oemStatus ?? null,
+        oem: update.oemNumber ?? null,
+        error: update.oemError ?? null
+      });
+      return data;
+    }
+    lastError = error;
+    const msg = error?.message || "";
+    const colMatch = msg.match(/'([^']+)'/);
+    if (colMatch && colMatch[1]) {
+      const col = colMatch[1];
+      delete payload[col];
+      continue;
+    }
+    break;
   }
 
-  return data;
+  throw new Error(`Failed to update OEM fields: ${lastError?.message || "unknown error"}`);
 }
 
 /**
@@ -840,6 +896,7 @@ export async function updateOrderStatus(
     throw new Error(`Failed to update order status: ${error.message}`);
   }
 
+  appendStatusLog(orderId, { type: "status", status });
   return data;
 }
 
@@ -874,6 +931,23 @@ export async function updateOrderScrapeTask(
   }
 
   return data;
+}
+
+/**
+ * Hängt einen Log-Eintrag im order_data.status_log an. Best‑effort, Fehler werden geschluckt.
+ */
+async function appendStatusLog(orderId: string, entry: Record<string, any>) {
+  try {
+    const client = getClient();
+    const { data } = await client.from("orders").select("order_data").eq("id", orderId).single();
+    const current = (data?.order_data as Record<string, any>) || {};
+    const log: any[] = Array.isArray(current.status_log) ? current.status_log : [];
+    log.push({ ts: new Date().toISOString(), ...entry });
+    const merged = { ...current, status_log: log.slice(-100) }; // begrenzen
+    await client.from("orders").update({ order_data: merged }).eq("id", orderId);
+  } catch (err) {
+    console.warn("appendStatusLog failed", { orderId, error: (err as any)?.message ?? err });
+  }
 }
 
 /**
@@ -1101,4 +1175,3 @@ export async function createInquiryAndInsertOffers(
 
   return true;
 }
-
