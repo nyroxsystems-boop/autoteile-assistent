@@ -39,7 +39,11 @@ export interface BestOemResult {
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
+import { ProxyAgent } from "proxy-agent";
+
 const SCRAPE_TIMEOUT_MS = 8000;
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.SCRAPE_PROXY_URL;
+const proxyAgent = proxyUrl ? new ProxyAgent({ getProxyForUrl: () => proxyUrl }) : undefined;
 
 async function fetchText(url: string): Promise<string> {
   const controller = new AbortController();
@@ -47,6 +51,8 @@ async function fetchText(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
+      // @ts-ignore agent is supported in node-fetch runtime
+      agent: proxyAgent,
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; OEMFinder/1.0; +https://autoteile-assistent.local)",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -85,6 +91,8 @@ async function aiExtractOemsFromHtml(html: string, ctx: SearchContext): Promise<
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
       },
+      // @ts-ignore agent is supported in node-fetch runtime
+      agent: proxyAgent,
       body: JSON.stringify({
         model: OPENAI_MODEL,
         messages: [

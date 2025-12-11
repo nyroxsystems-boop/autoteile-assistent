@@ -30,6 +30,7 @@
     "express": "^4.19.0",
     "node-fetch": "^2.7.0",
     "openai": "^6.10.0",
+    "proxy-agent": "^6.5.0",
     "twilio": "^4.23.0"
   },
   "devDependencies": {
