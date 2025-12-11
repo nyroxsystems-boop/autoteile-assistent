@@ -11,6 +11,7 @@ export const webScrapeSource: OEMSource = {
 
   async resolveCandidates(req: OEMResolverRequest): Promise<OEMCandidate[]> {
     // Build a minimal SearchContext from the resolver request
+    const suspected = req.partQuery.suspectedNumber;
     const ctx = {
       vehicle: {
         brand: req.vehicle.make ?? undefined,
@@ -20,7 +21,10 @@ export const webScrapeSource: OEMSource = {
         hsn: req.vehicle.hsn ?? undefined,
         tsn: req.vehicle.tsn ?? undefined
       },
-      userQuery: req.partQuery.rawText || [req.vehicle.make, req.vehicle.model, req.partQuery.normalizedCategory].filter(Boolean).join(" ")
+      userQuery:
+        suspected ||
+        req.partQuery.rawText ||
+        [req.vehicle.make, req.vehicle.model, req.partQuery.normalizedCategory].filter(Boolean).join(" ")
     };
 
     const result = await findBestOemForVehicle(ctx, false);
