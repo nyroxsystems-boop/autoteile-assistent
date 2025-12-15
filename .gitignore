@@ -37,3 +37,6 @@ Backup/
 # Bot local/test artifacts
 bot-service/*.jpeg
 bot-service/**/*.jpeg
+InvenTree-master/.venv/
+InvenTree-master/data/
+InvenTree-master/.env
