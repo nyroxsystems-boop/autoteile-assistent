@@ -11,3 +11,29 @@ coverage/
 .vscode/
 build/
 *.local
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dist/
+dashboard/dist/
+
+# Local DB / media
+*.sqlite3
+media/
+static/
+data/
+
+# Backups & archives
+Backup/
+*.zip
+
+# Bot local/test artifacts
+bot-service/*.jpeg
+bot-service/**/*.jpeg
