@@ -13,7 +13,8 @@ from django.core.wsgi import get_wsgi_application  # pragma: no cover
 from opentelemetry.instrumentation.wsgi import OpenTelemetryMiddleware
 
 os.environ.setdefault(
-    'DJANGO_SETTINGS_MODULE', 'InvenTree.settings'
+    'DJANGO_SETTINGS_MODULE',
+    'InvenTree.settings_render' if os.environ.get('PORT') else 'InvenTree.settings'
 )  # pragma: no cover
 
 application = get_wsgi_application()  # pragma: no cover
