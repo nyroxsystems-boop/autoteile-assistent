@@ -10,7 +10,10 @@ import os  # pragma: no cover
 
 # Render setzt DJANGO_SETTINGS_MODULE hart auf InvenTree.settings.
 # Wir überschreiben auf Render bewusst auf settings_render, damit das Frontend-Manifest gefunden wird.
-if os.environ.get("PORT") and os.environ.get("DJANGO_SETTINGS_MODULE") == "InvenTree.settings":
+def _is_render_env() -> bool:
+    return any(k.startswith("RENDER") for k in os.environ.keys()) or bool(os.environ.get("PORT"))
+
+if _is_render_env() and os.environ.get("DJANGO_SETTINGS_MODULE") == "InvenTree.settings":
     os.environ["DJANGO_SETTINGS_MODULE"] = "InvenTree.settings_render"
 
 
