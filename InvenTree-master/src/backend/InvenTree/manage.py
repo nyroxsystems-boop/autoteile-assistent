@@ -2,6 +2,12 @@
 """InvenTree / django management commands."""
 
 import os
+
+# Render setzt DJANGO_SETTINGS_MODULE hart auf InvenTree.settings.
+# Wir überschreiben auf Render bewusst auf settings_render, damit .vite/manifest.json via collectstatic mitkommt.
+if os.environ.get("PORT") and os.environ.get("DJANGO_SETTINGS_MODULE") == "InvenTree.settings":
+    os.environ["DJANGO_SETTINGS_MODULE"] = "InvenTree.settings_render"
+
 import sys
 from pathlib import Path
 

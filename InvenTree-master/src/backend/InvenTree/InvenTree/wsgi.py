@@ -8,6 +8,12 @@ https://docs.djangoproject.com/en/1.10/howto/deployment/wsgi/
 
 import os  # pragma: no cover
 
+# Render setzt DJANGO_SETTINGS_MODULE hart auf InvenTree.settings.
+# Wir überschreiben auf Render bewusst auf settings_render, damit das Frontend-Manifest gefunden wird.
+if os.environ.get("PORT") and os.environ.get("DJANGO_SETTINGS_MODULE") == "InvenTree.settings":
+    os.environ["DJANGO_SETTINGS_MODULE"] = "InvenTree.settings_render"
+
+
 from django.core.wsgi import get_wsgi_application  # pragma: no cover
 
 from opentelemetry.instrumentation.wsgi import OpenTelemetryMiddleware
