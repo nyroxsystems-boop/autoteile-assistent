@@ -72,6 +72,7 @@ apipatterns = [
     path('health', HealthView.as_view(), name='api-health-noslash'),
     path('settings/', include(common.api.settings_api_urls)),
     path('stock/', include(stock.api.stock_api_urls)),
+    path('ext/', include('extsync.urls')),
     path('', include(wws.api.api_urls)),
     path('', include(wws.api.dashboard_urls)),
     path('', include(billing.api.api_urls)),

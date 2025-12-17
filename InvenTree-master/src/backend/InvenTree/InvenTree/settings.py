@@ -296,6 +296,7 @@ INSTALLED_APPS = [
     'tenancy.apps.TenancyConfig',
     'channels.apps.ChannelsConfig',
     'wws.apps.WwsConfig',
+    'extsync.apps.ExtsyncConfig',
     'billing.apps.BillingConfig',
     'audit.apps.AuditConfig',
     'outbox.apps.OutboxConfig',
