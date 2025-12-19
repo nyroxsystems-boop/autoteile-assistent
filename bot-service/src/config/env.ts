@@ -4,8 +4,8 @@ dotenv.config();
 
 type EnvConfig = {
   port: number;
-  supabaseUrl: string;
-  supabaseServiceRoleKey: string;
+  supabaseUrl?: string;
+  supabaseServiceRoleKey?: string;
   botApiSecret?: string;
   enforceTwilioSignature: boolean;
 };
@@ -18,10 +18,13 @@ function requireEnv(name: string): string {
   return value;
 }
 
+// If SUPABASE integration is disabled (development), don't require supabase envs
+const supabaseDisabled = process.env.DISABLE_SUPABASE === "true";
+
 export const env: EnvConfig = {
   port: Number(process.env.PORT || 3000),
-  supabaseUrl: requireEnv("SUPABASE_URL"),
-  supabaseServiceRoleKey: requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
+  supabaseUrl: supabaseDisabled ? undefined : process.env.SUPABASE_URL || undefined,
+  supabaseServiceRoleKey: supabaseDisabled ? undefined : process.env.SUPABASE_SERVICE_ROLE_KEY || undefined,
   botApiSecret: process.env.BOT_API_SECRET || undefined,
   enforceTwilioSignature: process.env.ENFORCE_TWILIO_SIGNATURE === "true"
 };

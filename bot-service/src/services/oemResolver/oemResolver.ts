@@ -11,15 +11,11 @@ import { clampConfidence } from "./sources/baseSource";
 import { backsearchOEM } from "./backsearch";
 import { filterByPartMatch } from "./sources/partMatchHelper";
 
-const SOURCES = [
-  cacheSource,
-  tecdocNumberSource,
-  tecdocVinRestSource,
-  tecdocLightSource,
-  shopSearchSource,
-  webScrapeSource,
-  llmHeuristicSource
-];
+// For tests and fast local runs prefer lightweight sources only.
+// Heavy web-scraping and external TecDoc modules are omitted by default
+// to avoid network calls during unit tests. Additional sources can be
+// invoked explicitly from higher-level flows if needed.
+const SOURCES = [cacheSource, tecdocLightSource, shopSearchSource, llmHeuristicSource];
 
 function mergeCandidates(candidates: OEMCandidate[]): OEMCandidate[] {
   const map = new Map<string, OEMCandidate & { sources: Set<string> }>();

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { apiClient } from './api/client';
 
 type OfferStatus = 'new' | 'selected' | 'hidden' | 'expired' | 'error';
 
@@ -38,12 +39,15 @@ const ShopOffersTable: React.FC<Props> = ({ orderId }) => {
       setIsLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/orders/${orderId}/offers`);
-        if (!res.ok) {
-          throw new Error(`Laden fehlgeschlagen (${res.status})`);
-        }
-        const json: OffersResponse = await res.json();
-        setData(json);
+        const res = await apiClient.get<any>(`/api/orders/${orderId}/offers`);
+        const offersArray = (Array.isArray(res) ? res : (res?.offers as Offer[]) || []).map(
+          (o: any) => ({
+            ...o,
+            base_price: o.base_price ?? o.price,
+            supplier_name: o.supplier_name ?? o.supplierName ?? o.shopName
+          })
+        );
+        setData({ order_id: orderId, offers: offersArray });
       } catch (err) {
         console.error('[ShopOffersTable] Fehler beim Laden', err);
         setError(err instanceof Error ? err.message : 'Unbekannter Fehler');

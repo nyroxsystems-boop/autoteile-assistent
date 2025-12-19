@@ -1,75 +1,62 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-
-type MerchantSession = {
-  merchantId: string;
-};
+import { Navigate, useNavigate } from 'react-router-dom';
+import { apiClient } from '../api/client';
+import {
+  AuthSession,
+  clearTokens,
+  getStoredSession,
+  onUnauthorized,
+  setTokens
+} from '../lib/auth';
 
 type AuthContextValue = {
-  session: MerchantSession | null;
-  login: (merchantId: string, password: string) => Promise<boolean>;
-  register: (merchantId: string, password: string) => Promise<boolean>;
+  session: AuthSession | null;
+  login: (email: string, password: string, tenant?: string) => Promise<boolean>;
   logout: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const USERS_KEY = 'merchant_users';
-const SESSION_KEY = 'merchant_session';
-
-function readUsers(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(USERS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeUsers(u: Record<string, string>) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(u));
-}
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [session, setSession] = useState<MerchantSession | null>(() => {
-    try {
-      const raw = localStorage.getItem(SESSION_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [session, setSession] = useState<AuthSession | null>(() => getStoredSession());
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
-  }, [session]);
+    onUnauthorized(() => {
+      logout();
+    });
+  }, []);
 
-  const login = async (merchantId: string, password: string) => {
-    const users = readUsers();
-    if (users[merchantId] && users[merchantId] === password) {
-      setSession({ merchantId });
+  const login = async (email: string, password: string, tenant?: string) => {
+    try {
+      const res = await apiClient.post<{
+        access: string;
+        refresh: string;
+        user: any;
+        tenant: any;
+      }>('/api/auth/login', { email, password, tenant });
+
+      const nextSession: AuthSession = {
+        user: res.user,
+        tenant: res.tenant,
+        role: res?.tenant?.role
+      };
+      setTokens(res.access, res.refresh, nextSession);
+      setSession(nextSession);
       return true;
+    } catch (err) {
+      console.error('[auth] login failed', err);
+      return false;
     }
-    return false;
-  };
-
-  const register = async (merchantId: string, password: string) => {
-    const users = readUsers();
-    if (users[merchantId]) return false; // already exists
-    users[merchantId] = password;
-    writeUsers(users);
-    setSession({ merchantId });
-    return true;
   };
 
   const logout = () => {
+    clearTokens();
     setSession(null);
     navigate('/auth');
   };
 
-  const value = useMemo(() => ({ session, login, register, logout }), [session]);
+  const value = useMemo(() => ({ session, login, logout }), [session]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
@@ -82,12 +69,9 @@ export function useAuth() {
 
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { session } = useAuth();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if (!session) navigate('/auth');
-  }, [session, navigate]);
-
-  if (!session) return null;
+  if (!session) {
+    if (import.meta.env.VITE_DISABLE_LOGIN === "true") { return children as any; }
+    return <Navigate to="/auth" replace />;
+  }
   return <>{children}</>;
 }

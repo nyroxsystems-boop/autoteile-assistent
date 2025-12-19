@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getOrder, getOrderOffers } from '../api/orders';
 import type { Order, OrderData, SelectedOfferSummary, ShopOffer } from '../api/types';
+import Card from '../ui/Card';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import { createInvoiceFromOrder } from '../api/invoices';
 
 type OfferRow = ShopOffer & { priceValue: number; currencyValue: string };
 
@@ -13,6 +17,7 @@ const OrderDetailPage = () => {
 
   const [orderError, setOrderError] = useState<string | null>(null);
   const [offersError, setOffersError] = useState<string | null>(null);
+  const [invoiceError, setInvoiceError] = useState<string | null>(null);
 
   const [isOrderLoading, setIsOrderLoading] = useState<boolean>(false);
   const [isOffersLoading, setIsOffersLoading] = useState<boolean>(false);
@@ -71,6 +76,46 @@ const OrderDetailPage = () => {
     [offers, selectedOfferId]
   );
 
+  // Normalize common Felder, damit Daten nicht wegen anderer Keys fehlen
+  const createdAt = order?.created_at ?? (order as any)?.createdAt ?? null;
+  const updatedAt = order?.updated_at ?? (order as any)?.updatedAt ?? null;
+  const customerName =
+    (order as any)?.customerName ?? (order as any)?.customer_name ?? order?.customerId ?? '—';
+  const customerContact =
+    (order as any)?.customerPhone ??
+    order?.customerPhone ??
+    (order as any)?.customerContact ??
+    (order as any)?.customer_contact ??
+    (order as any)?.contact ??
+    '—';
+  const partName =
+    (order as any)?.requestedPartName ??
+    (order as any)?.requested_part ??
+    orderData?.partDescription ??
+    (order as any)?.partDescription ??
+    (order?.part as any)?.partText ??
+    (order?.part as any)?.partCategory ??
+    '—';
+  const conversationStatus =
+    (orderData as any)?.conversationStatus ??
+    (orderData as any)?.conversation_status ??
+    (order as any)?.conversationStatus ??
+    (order as any)?.conversation_status ??
+    '—';
+  const vehicle = (order as any)?.vehicle ?? null;
+  const vehicleFromParts = [vehicle?.make, vehicle?.model, vehicle?.year].filter(Boolean).join(' ').trim();
+  const vehicleFallback =
+    vehicleFromParts ||
+    vehicle?.vin ||
+    [vehicle?.hsn, vehicle?.tsn].filter(Boolean).join('/').trim() ||
+    vehicle?.engine ||
+    null;
+  const vehicleInfo =
+    orderData?.vehicleDescription ??
+    (orderData as any)?.vehicle_description ??
+    vehicleFallback ??
+    '—';
+
   const selectedCardOffer: any = selectedOffer ?? (selectedOfferSummary
     ? {
         shopName: selectedOfferSummary.shopName ?? '—',
@@ -83,104 +128,119 @@ const OrderDetailPage = () => {
       }
     : null);
 
+  const handleCreateInvoice = async () => {
+    if (!orderId) return;
+    setInvoiceError(null);
+    try {
+      const inv = await createInvoiceFromOrder(orderId);
+      navigate(`/orders/${inv.id}`);
+    } catch (err: any) {
+      setInvoiceError(err?.message || 'Order konnte nicht erstellt werden');
+    }
+  };
+
   if (!orderId) {
-    return <div style={styles.wrapper}>No order id provided.</div>;
+    return <div style={styles.wrapper}>Keine Bestell-ID übergeben.</div>;
   }
+
+  const statusVariant = (status?: string | null): 'success' | 'danger' | 'neutral' => {
+    const s = (status ?? '').toLowerCase();
+    if (s.includes('done') || s.includes('complete') || s.includes('show_offers')) return 'success';
+    if (s.includes('fail') || s.includes('error') || s.includes('abort')) return 'danger';
+    return 'neutral';
+  };
 
   return (
     <div style={styles.wrapper}>
       <div style={styles.breadcrumbs}>
-        <Link to="/orders">← Back to orders</Link>
+        <Link to="/orders">← Zurück zur Bestellübersicht</Link>
         <span style={styles.routeInfo}>/orders/{orderId}</span>
       </div>
 
       {orderError ? (
-        <div style={styles.errorBox}>
-          <strong>Order error:</strong> {orderError}
+        <div className="error-box">
+          <strong>Fehler beim Laden der Bestellung:</strong> {orderError}
+        </div>
+      ) : null}
+      {invoiceError ? (
+        <div className="error-box">
+          <strong>Order-Fehler:</strong> {invoiceError}
         </div>
       ) : null}
 
-      <section style={styles.card}>
-        <header style={styles.sectionHeader}>
-          <div>
-            <p style={styles.subtitle}>Order #{orderId}</p>
-            <h2 style={styles.title}>{order?.status ?? 'Loading...'}</h2>
+      <Card
+        title={`Bestellung #${orderId}`}
+        subtitle="Status und Metadaten"
+        actions={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Badge variant="neutral">{order?.language ?? 'n/a'}</Badge>
+            <Button size="sm" onClick={handleCreateInvoice}>
+              Order erzeugen
+            </Button>
           </div>
-          <div style={styles.badge}>{order?.language ?? 'n/a'}</div>
-        </header>
+        }
+      >
         <div style={styles.rowGrid}>
           <div>
-            <div style={styles.label}>Created at</div>
+            <div style={styles.label}>Erstellt am</div>
             <div style={styles.value}>
-              {order?.created_at
-                ? new Date(order.created_at).toLocaleString(undefined, {
-                    dateStyle: 'medium',
-                    timeStyle: 'short'
-                  })
+              {createdAt
+                ? new Date(createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                 : '—'}
             </div>
           </div>
           <div>
-            <div style={styles.label}>Updated at</div>
+            <div style={styles.label}>Aktualisiert am</div>
             <div style={styles.value}>
-              {order?.updated_at
-                ? new Date(order.updated_at).toLocaleString(undefined, {
-                    dateStyle: 'medium',
-                    timeStyle: 'short'
-                  })
+              {updatedAt
+                ? new Date(updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                 : '—'}
             </div>
           </div>
           <div>
             <div style={styles.label}>Status</div>
-            <div style={styles.value}>{order?.status ?? '—'}</div>
+            <Badge variant={statusVariant(order?.status) as any}>{order?.status ?? '—'}</Badge>
           </div>
           <div>
-            <div style={styles.label}>Conversation</div>
-            <div style={styles.value}>{orderData?.conversationStatus ?? '—'}</div>
+            <div style={styles.label}>Dialog-Status</div>
+            <div style={styles.value}>{conversationStatus}</div>
           </div>
         </div>
-      </section>
+      </Card>
 
-      <section style={styles.card}>
-        <header style={styles.sectionHeader}>
-          <h3 style={styles.title}>Order Summary</h3>
-        </header>
+      <Card title="Bestellübersicht">
         <div style={styles.rowGrid}>
           <div>
-            <div style={styles.label}>Customer</div>
-            <div style={styles.value}>{(order as any)?.customerName ?? '—'}</div>
+            <div style={styles.label}>Kunde</div>
+            <div style={styles.value}>{customerName}</div>
           </div>
           <div>
-            <div style={styles.label}>Contact</div>
-            <div style={styles.value}>{(order as any)?.customerPhone ?? (order as any)?.customerContact ?? '—'}</div>
+            <div style={styles.label}>Kontakt</div>
+            <div style={styles.value}>{customerContact}</div>
           </div>
           <div>
-            <div style={styles.label}>Requested Part</div>
-            <div style={styles.value}>{(order as any)?.requestedPartName ?? orderData?.partDescription ?? '—'}</div>
+            <div style={styles.label}>Angefragtes Teil</div>
+            <div style={styles.value}>{partName}</div>
           </div>
           <div>
-            <div style={styles.label}>Language</div>
+            <div style={styles.label}>Sprache</div>
             <div style={styles.value}>{order?.language ?? '—'}</div>
           </div>
         </div>
         <div style={styles.detailBox}>
-          <div style={styles.label}>Vehicle (description)</div>
-          <div style={styles.value}>{orderData?.vehicleDescription ?? '—'}</div>
+          <div style={styles.label}>Fahrzeug (Beschreibung)</div>
+          <div style={styles.value}>{vehicleInfo}</div>
         </div>
-      </section>
+      </Card>
 
-      <section style={styles.card}>
-        <header style={styles.sectionHeader}>
-          <h3 style={styles.title}>
-            {order?.language === 'en' ? "Customer's selected product" : 'Gewähltes Produkt des Kunden'}
-          </h3>
-          {selectedOfferId ? <span style={styles.selectedBadge}>Selected by customer</span> : null}
-        </header>
+      <Card
+        title="Gewähltes Produkt"
+        actions={selectedOfferId ? <Badge variant="success">Ausgewählt</Badge> : null}
+      >
         {selectedCardOffer ? (
           <div style={styles.selectedGrid}>
             <div>
-              <div style={styles.label}>{order?.language === 'en' ? 'Brand' : 'Marke'}</div>
+              <div style={styles.label}>Marke</div>
               <div style={styles.value}>{(selectedCardOffer as any).brand ?? '—'}</div>
             </div>
             <div>
@@ -188,20 +248,17 @@ const OrderDetailPage = () => {
               <div style={styles.value}>{(selectedCardOffer as any).shopName ?? '—'}</div>
             </div>
             <div>
-              <div style={styles.label}>{order?.language === 'en' ? 'Price' : 'Preis'}</div>
+              <div style={styles.label}>Preis</div>
               <div style={styles.value}>
                 {Number.isFinite((selectedCardOffer as any).priceValue)
-                  ? `${(selectedCardOffer as any).priceValue.toFixed(2)} ${
-                      (selectedCardOffer as any).currencyValue ?? 'EUR'
-                    }`
+                  ? `${(selectedCardOffer as any).priceValue.toFixed(2)} ${(selectedCardOffer as any).currencyValue ?? 'EUR'}`
                   : '—'}
               </div>
             </div>
             <div>
-              <div style={styles.label}>{order?.language === 'en' ? 'Delivery' : 'Lieferzeit'}</div>
+              <div style={styles.label}>Lieferzeit</div>
               <div style={styles.value}>
-                {(selectedCardOffer as any).deliveryTimeDays ??
-                  (order?.language === 'en' ? 'n/a' : 'k.A.')}
+                {(selectedCardOffer as any).deliveryTimeDays ?? 'k.A.'}
               </div>
             </div>
             <div>
@@ -209,8 +266,6 @@ const OrderDetailPage = () => {
               <div style={styles.value}>
                 {(selectedCardOffer as any).rating
                   ? `${(selectedCardOffer as any).rating}/5`
-                  : order?.language === 'en'
-                  ? 'n/a'
                   : 'k.A.'}
               </div>
             </div>
@@ -220,55 +275,63 @@ const OrderDetailPage = () => {
                   href={(selectedCardOffer as any).productUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={styles.linkButton}
+                  className="ui-btn ui-btn-primary ui-btn-sm"
                 >
-                  {order?.language === 'en' ? 'Open product' : 'Zum Produkt'}
+                  Zum Produkt
                 </a>
               </div>
             ) : null}
           </div>
         ) : (
-          <div style={styles.emptyBox}>
-            {order?.language === 'en'
-              ? 'The customer has not selected an offer yet.'
-              : 'Der Kunde hat noch kein Angebot ausgewählt.'}
+          <div className="empty-state">
+            Der Kunde hat noch kein Angebot ausgewählt.
           </div>
         )}
-      </section>
+      </Card>
 
-      <section style={styles.card}>
-        <header style={styles.sectionHeader}>
-          <h3 style={styles.title}>
-            {order?.language === 'en' ? 'All offers for this order' : 'Alle Angebote zu dieser Bestellung'}
-          </h3>
-        </header>
-
+      <Card title="Alle Angebote zu dieser Bestellung">
         {offersError ? (
-          <div style={styles.errorBox}>
-            <strong>Offers error:</strong> {offersError}
+          <div className="error-box">
+            <strong>Fehler beim Laden der Angebote:</strong> {offersError}
           </div>
         ) : null}
 
         {isOffersLoading ? (
-          <div style={styles.loading}>Loading offers…</div>
+          <div style={styles.tableWrapper}>
+            <table className="table">
+              <tbody>
+                {Array.from({ length: 3 }).map((_, idx) => (
+                  <tr key={idx}>
+                    <td colSpan={7}>
+                      <div className="skeleton-row">
+                        <div className="skeleton-block" />
+                        <div className="skeleton-block" />
+                        <div className="skeleton-block" />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : offers.length === 0 ? (
-          <div style={styles.emptyBox}>
+          <div className="empty-state">
             {order?.language === 'en'
               ? 'No offers have been found for this order yet.'
               : 'Es wurden noch keine Angebote zu dieser Bestellung gefunden.'}
           </div>
         ) : (
           <div style={styles.tableWrapper}>
-            <table style={styles.table}>
+            <table className="table">
               <thead>
                 <tr>
-                  <th style={styles.th}>Shop</th>
-                  <th style={styles.th}>Brand</th>
-                  <th style={styles.th}>Preis</th>
-                  <th style={styles.th}>Verfügbarkeit</th>
-                  <th style={styles.th}>Lieferzeit</th>
-                  <th style={styles.th}>Rating</th>
-                  <th style={styles.th}>Link</th>
+                  <th>Shop</th>
+                  <th>Brand</th>
+                  <th>Preis</th>
+                  <th>Verfügbarkeit</th>
+                  <th>Lieferzeit</th>
+                  <th>Rating</th>
+                  <th>Link</th>
                 </tr>
               </thead>
               <tbody>
@@ -280,40 +343,27 @@ const OrderDetailPage = () => {
                   return (
                     <tr
                       key={offer.id}
-                      style={{
-                        ...styles.tr,
-                        ...(isSelected ? styles.selectedRow : {})
-                      }}
+                      className="table-row"
+                      style={isSelected ? { background: 'rgba(37,99,235,0.08)' } : undefined}
                     >
-                      <td style={styles.td}>
+                      <td>
                         <div style={styles.cellStack}>
                           <div style={styles.value}>{offer.shopName ?? '—'}</div>
-                      {isSelected ? (
-                        <span style={styles.selectedBadgeSmall}>
-                          {order?.language === 'en' ? 'Selected' : 'Ausgewählt'}
-                        </span>
-                      ) : null}
+                          {isSelected ? <Badge variant="success">{order?.language === 'en' ? 'Selected' : 'Ausgewählt'}</Badge> : null}
                         </div>
                       </td>
-                      <td style={styles.td}>{offer.brand ?? '—'}</td>
-                      <td style={styles.td}>{priceLabel}</td>
-                      <td style={styles.td}>{offer.availability ?? '—'}</td>
-                      <td style={styles.td}>
+                      <td>{offer.brand ?? '—'}</td>
+                      <td>{priceLabel}</td>
+                      <td>{offer.availability ?? '—'}</td>
+                      <td>
                         {offer.deliveryTimeDays !== null && offer.deliveryTimeDays !== undefined
                           ? `${offer.deliveryTimeDays} Tage`
                           : '—'}
                       </td>
-                      <td style={styles.td}>
-                        {offer.rating !== null && offer.rating !== undefined ? `${offer.rating}/5` : '—'}
-                      </td>
-                      <td style={styles.td}>
+                      <td>{offer.rating !== null && offer.rating !== undefined ? `${offer.rating}/5` : '—'}</td>
+                      <td>
                         {offer.productUrl ? (
-                          <a
-                            href={offer.productUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={styles.link}
-                          >
+                          <a href={offer.productUrl} target="_blank" rel="noopener noreferrer" style={styles.link}>
                             {order?.language === 'en' ? 'Open product' : 'Zum Produkt'}
                           </a>
                         ) : (
@@ -327,7 +377,7 @@ const OrderDetailPage = () => {
             </table>
           </div>
         )}
-      </section>
+      </Card>
     </div>
   );
 };
@@ -342,11 +392,11 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    color: '#475569'
+    color: '#cbd5e1' // Schriftfarbe für Breadcrumbs aufgehellt (lesbar auf dunkel)
   },
   routeInfo: {
     fontSize: 12,
-    color: '#94a3b8'
+    color: '#94a3b8' // Route-Info ebenfalls heller
   },
   errorBox: {
     padding: 12,
@@ -358,13 +408,13 @@ const styles: Record<string, CSSProperties> = {
   emptyBox: {
     padding: 12,
     borderRadius: 10,
-    backgroundColor: '#f1f5f9',
-    color: '#475569',
-    border: '1px solid #e2e8f0'
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    color: 'var(--muted)',
+    border: '1px solid var(--border)'
   },
   card: {
-    backgroundColor: '#ffffff',
-    border: '1px solid #e2e8f0',
+    backgroundColor: 'var(--bg-panel)',
+    border: '1px solid var(--border)',
     borderRadius: 12,
     padding: 18,
     display: 'flex',
@@ -380,17 +430,17 @@ const styles: Record<string, CSSProperties> = {
   },
   subtitle: {
     margin: 0,
-    color: '#475569',
+    color: '#a0aec0', // Labels leicht abgedunkelt, aber lesbar
     fontSize: 14
   },
   title: {
     margin: 0,
     fontSize: 20,
-    color: '#0f172a'
+    color: '#ffffff' // Titel in weiß für maximale Lesbarkeit
   },
   badge: {
     padding: '6px 10px',
-    backgroundColor: '#e2e8f0',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 8,
     fontWeight: 700
   },
@@ -414,7 +464,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700
   },
   selectedRow: {
-    backgroundColor: '#f8fafc'
+    backgroundColor: 'rgba(255,255,255,0.04)'
   },
   rowGrid: {
     display: 'grid',
@@ -422,11 +472,11 @@ const styles: Record<string, CSSProperties> = {
     gap: 12
   },
   label: {
-    color: '#475569',
+    color: '#a0aec0', // Beschriftung in dezenter, aber heller Farbe
     fontSize: 13
   },
   value: {
-    color: '#0f172a',
+    color: '#ffffff', // Werte klar lesbar auf dunklem Hintergrund
     fontSize: 15,
     fontWeight: 600
   },
@@ -441,7 +491,8 @@ const styles: Record<string, CSSProperties> = {
   tableWrapper: {
     overflowX: 'auto',
     borderRadius: 10,
-    border: '1px solid #e2e8f0'
+    border: '1px solid var(--border)',
+    background: 'var(--bg-panel)' // leichter Panel-Hintergrund für Tabelle
   },
   table: {
     width: '100%',
@@ -450,36 +501,37 @@ const styles: Record<string, CSSProperties> = {
   th: {
     textAlign: 'left',
     padding: '10px 12px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid var(--border)',
     fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    color: '#475569'
+    color: '#a0aec0' // Tabellen-Header gut lesbar
   },
   td: {
     padding: '10px 12px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid var(--border)',
     fontSize: 14,
-    verticalAlign: 'middle'
+    verticalAlign: 'middle',
+    color: '#ffffff' // Tabellenwerte klar sichtbar
   },
   tr: {
-    backgroundColor: '#ffffff'
+    backgroundColor: 'transparent'
   },
   loading: {
     padding: 10,
     borderRadius: 8,
-    backgroundColor: '#e0f2fe',
-    color: '#075985',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    color: 'var(--text)',
     fontWeight: 600
   },
   link: {
-    color: '#1d4ed8',
+    color: 'var(--primary)', // Linkfarbe an Theme angepasst
     fontWeight: 700
   },
   linkButton: {
     display: 'inline-block',
     padding: '10px 12px',
-    backgroundColor: '#1d4ed8',
+    backgroundColor: 'var(--primary)',
     color: '#ffffff',
     borderRadius: 10,
     textDecoration: 'none',

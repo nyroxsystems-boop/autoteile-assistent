@@ -1,191 +1,350 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext';
-import { I18nProvider, useI18n } from './i18n';
+import { useI18n, languageOptions } from './i18n';
+import Button from './ui/Button';
+import Badge from './ui/Badge';
+import { TimeframeProvider, useTimeframe } from './features/timeframe/TimeframeContext';
+import DevInfo from './ui/DevInfo';
 
-const navItems = [
-  { path: '/', label: 'Übersicht' },
-  { path: '/orders', label: 'Bestellungen' }
+type NavGroup = {
+  id: string;
+  label: string;
+  items: { path: string; label: string }[];
+};
+
+const navGroups: NavGroup[] = [
+  {
+    id: 'cockpit',
+    label: 'Cockpit',
+    items: [
+      { path: '/overview', label: 'Übersicht' },
+      { path: '/recommendations', label: 'Empfehlungen' }
+    ]
+  },
+  {
+    id: 'sales',
+    label: 'Verkauf',
+    items: [
+      { path: '/orders', label: 'Bestellungen' },
+      { path: '/insights/conversion', label: 'Konversion & Abbrüche' }
+    ]
+  },
+  {
+    id: 'insights',
+    label: 'Insights',
+    items: [
+      { path: '/insights/forensics', label: 'Forensik' },
+      { path: '/insights/returns', label: 'Retouren' }
+    ]
+  },
+  {
+    id: 'inventory',
+    label: 'Lager & Einkauf',
+    items: [
+      { path: '/inventory', label: 'Lagerübersicht' },
+      { path: '/inventory/capital', label: 'Gebundenes Kapital' }
+    ]
+  },
+  {
+    id: 'finance',
+    label: 'Finanzen',
+    items: [
+      { path: '/orders', label: 'Orders' },
+      { path: '/documents', label: 'Belege' },
+      { path: '/documents/transmit', label: 'Behörden-Übermittlung' }
+    ]
+  },
+  {
+    id: 'wawi',
+    label: 'WAWI',
+    items: [
+      { path: '/offers', label: 'Offers' },
+      { path: '/suppliers', label: 'Suppliers' },
+      { path: '/wws-connections', label: 'WWS Connections' }
+    ]
+  },
+  {
+    id: 'settings',
+    label: 'Einstellungen',
+    items: [
+      { path: '/settings/pricing', label: 'Preisprofile' },
+      { path: '/settings/integrations', label: 'Shops & Integrationen' }
+    ]
+  }
 ];
 
 const App: React.FC = () => (
-  <I18nProvider>
+  <TimeframeProvider>
     <InnerApp />
-  </I18nProvider>
+  </TimeframeProvider>
 );
 
 const InnerApp: React.FC = () => {
   const location = useLocation();
   const auth = useAuth();
   const { t, lang, setLang } = useI18n();
+  const { timeframe, setTimeframe } = useTimeframe();
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof localStorage === 'undefined') return 'dark';
+    const stored = localStorage.getItem('theme');
+    return stored === 'light' ? 'light' : 'dark';
+  });
+  const [langSearch, setLangSearch] = useState('');
+  const [showLangMenu, setShowLangMenu] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    if (typeof localStorage === 'undefined') return {};
+    try {
+      return JSON.parse(localStorage.getItem('nav_collapsed') || '{}');
+    } catch {
+      return {};
+    }
+  });
 
   useEffect(() => {
-    console.log('[Layout] mounted');
-    return () => console.log('[Layout] unmounted');
-  }, []);
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
   useEffect(() => {
-    console.log('[Layout] route changed to', location.pathname);
-  }, [location]);
+    localStorage.setItem('nav_collapsed', JSON.stringify(collapsedGroups));
+  }, [collapsedGroups]);
+
+  const pageTitle = useMemo(() => {
+    if (location.pathname.startsWith('/orders/')) return 'Bestelldetails';
+    if (location.pathname.startsWith('/overview')) return 'Übersicht';
+    if (location.pathname.startsWith('/recommendations')) return 'Empfehlungen';
+    if (location.pathname.startsWith('/insights/forensics')) return 'Forensik';
+    if (location.pathname.startsWith('/insights/conversion')) return 'Konversion & Abbrüche';
+    if (location.pathname.startsWith('/inventory/capital')) return 'Gebundenes Kapital Radar';
+    if (location.pathname.startsWith('/inventory')) return 'Lagerübersicht';
+    if (location.pathname.startsWith('/orders') || location.pathname.startsWith('/invoices')) return 'Orders';
+    if (location.pathname.startsWith('/documents')) return 'Belege';
+    if (location.pathname.startsWith('/settings/pricing')) return 'Preisprofile';
+    if (location.pathname.startsWith('/settings/integrations')) return 'Shops & Integrationen';
+    return t('brandTitle');
+  }, [location.pathname, t]);
+
+  const toggleGroup = (id: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   return (
-    <div style={styles.shell} className="container">
-      <header style={styles.header}>
-        <div style={styles.brandBlock}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={styles.logo} />
-            <div>
-              <div style={styles.brandTitle}>{t('brandTitle')}</div>
-              <p style={styles.brandSubtitle}>{t('brandSubtitle')}</p>
-            </div>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon" />
+          <div>
+            <div style={{ fontWeight: 800, letterSpacing: 0.3 }}>PartsBot Dashboard</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>{t('brandSubtitle')}</div>
           </div>
         </div>
-
-        <nav style={styles.nav}>
-          {navItems.map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              style={({ isActive }) => ({
-                ...styles.navLink,
-                ...(isActive ? styles.navLinkActive : {})
-              })}
-            >
-              {item.label}
-            </NavLink>
+        <nav className="sidebar-nav" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {navGroups.map((group) => (
+            <div key={group.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => toggleGroup(group.id)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--muted)',
+                  fontWeight: 700,
+                  textAlign: 'left',
+                  padding: '6px 8px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  cursor: 'pointer'
+                }}
+              >
+                <span>{group.label}</span>
+                <span style={{ opacity: 0.6 }}>{collapsedGroups[group.id] ? '▸' : '▾'}</span>
+              </button>
+              {!collapsedGroups[group.id] ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {group.items.map((item) => (
+                    <NavLink
+                      key={item.path}
+                      to={item.path}
+                      className={({ isActive }) => ['sidebar-link', isActive ? 'active' : ''].join(' ')}
+                    >
+                      <span className="sidebar-link-label">{item.label}</span>
+                    </NavLink>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           ))}
         </nav>
+      </aside>
 
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          {auth?.session ? (
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <div style={styles.merchantInfo}>
-                <div style={styles.avatar}>{auth.session.merchantId?.slice(0, 2).toUpperCase()}</div>
-                <div style={{ color: '#cbd5e1', fontWeight: 700 }}>{auth.session.merchantId}</div>
-              </div>
-              <button style={styles.logoutButton} onClick={() => auth.logout()}>
-                {t('logout')}
-              </button>
+      <div className="main-area">
+        <div className="topbar">
+          <div className="topbar-title">{pageTitle}</div>
+          <div className="topbar-actions" style={{ gap: 10 }}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['Heute', 'Diese Woche', 'Dieser Monat', 'Dieses Jahr'] as const).map((p) => (
+                <Button
+                  key={p}
+                  variant={timeframe === p ? 'primary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setTimeframe(p)}
+                  aria-label={`Zeitraum ${p}`}
+                >
+                  {p}
+                </Button>
+              ))}
             </div>
-          ) : null}
-
-          <select
-            value={lang}
-            onChange={(e) => setLang(e.target.value as any)}
-            style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff' }}
-            aria-label="language"
-          >
-            <option value="de">Deutsch</option>
-            <option value="en">English</option>
-            <option value="pl">Polski</option>
-          </select>
+            <Button variant="ghost" size="sm" aria-label="Command Palette">⌘K</Button>
+            <div style={{ position: 'relative' }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowLangMenu((v) => !v)}
+                aria-label="Sprache wählen"
+                style={{ minWidth: 120, justifyContent: 'space-between', display: 'inline-flex' }}
+              >
+                {languageOptions.find((l) => l.code === lang)?.label ?? 'Sprache'}
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>▾</span>
+              </Button>
+              {showLangMenu ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 42,
+                    width: 220,
+                    background: 'var(--bg-panel)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 12,
+                    boxShadow: '0 18px 40px rgba(0,0,0,0.35)',
+                    padding: 10,
+                    zIndex: 20,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8
+                  }}
+                >
+                  <input
+                    value={langSearch}
+                    onChange={(e) => setLangSearch(e.target.value)}
+                    placeholder="Sprache suchen..."
+                    style={{
+                      width: '100%',
+                      borderRadius: 10,
+                      border: '1px solid var(--border)',
+                      padding: '8px 10px',
+                      background: 'rgba(255,255,255,0.03)',
+                      color: 'var(--text)'
+                    }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+                    {languageOptions
+                      .filter((l) =>
+                        (l.label + l.code)
+                          .toLowerCase()
+                          .includes(langSearch.trim().toLowerCase())
+                      )
+                      .map((l) => (
+                        <button
+                          key={l.code}
+                          type="button"
+                          onClick={() => {
+                            setLang(l.code as any);
+                            setShowLangMenu(false);
+                            setLangSearch('');
+                          }}
+                          style={{
+                            textAlign: 'left',
+                            border: '1px solid var(--border)',
+                            borderRadius: 10,
+                            padding: '8px 10px',
+                            background: l.code === lang ? 'rgba(79,139,255,0.12)' : 'transparent',
+                            color: 'var(--text)',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {l.label}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+              aria-label="Theme umschalten"
+            >
+              {theme === 'dark' ? 'Hell' : 'Dunkel'}
+            </Button>
+            {auth?.session ? (
+              <div style={{ position: 'relative' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowProfileMenu((v) => !v)}
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 14,
+                    background: 'linear-gradient(135deg, #334155, #1e293b)',
+                    border: '1px solid var(--border)',
+                    color: '#e2e8f0',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                  aria-label="Profilmenü öffnen"
+                >
+                  {auth.session.merchantId?.slice(0, 2).toUpperCase()}
+                </button>
+                {showProfileMenu ? (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      top: 46,
+                      minWidth: 200,
+                      background: 'var(--bg-panel)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 12,
+                      boxShadow: '0 14px 40px rgba(0,0,0,0.3)',
+                      padding: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                      zIndex: 15
+                    }}
+                  >
+                    <div style={{ fontWeight: 800 }}>{auth.session.merchantId}</div>
+                    <Badge variant="success">Plan aktiv</Badge>
+                    <Button variant="ghost" size="sm" fullWidth>
+                      Marge & Shops
+                    </Button>
+                    <Button variant="ghost" size="sm" fullWidth>
+                      Billing & Konto
+                    </Button>
+                    <Button variant="ghost" size="sm" fullWidth>
+                      Mitarbeiteraccounts
+                    </Button>
+                    <Button variant="ghost" size="sm" fullWidth onClick={() => auth.logout()}>
+                      {t('logout')}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
-      </header>
-
-      <main style={styles.main}>
-        <div style={styles.pageWrapper}>
+        <main className="page">
+          {import.meta.env.DEV ? <DevInfo /> : null}
           <Outlet />
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
-};
-
-type CSSProperties = React.CSSProperties;
-
-const styles: Record<string, CSSProperties> = {
-  shell: {
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '18px 28px',
-    backgroundColor: '#0f172a',
-    color: '#e2e8f0',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.12)'
-  },
-  brandBlock: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4
-  },
-  logo: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    background: 'linear-gradient(135deg,#2563eb,#06b6d4)'
-  },
-  brandTitle: {
-    fontSize: 20,
-    fontWeight: 800,
-    letterSpacing: 0.3
-  },
-  brandSubtitle: {
-    margin: 0,
-    color: '#cbd5e1',
-    fontSize: 13
-  },
-  nav: {
-    display: 'flex',
-    gap: 10
-  },
-  navLink: {
-    padding: '10px 14px',
-    borderRadius: 10,
-    color: '#e2e8f0',
-    textDecoration: 'none',
-    border: '1px solid transparent',
-    fontWeight: 700,
-    letterSpacing: 0.2,
-    transition: 'all 0.15s ease'
-  },
-  navLinkActive: {
-    backgroundColor: '#1d4ed8',
-    borderColor: '#3b82f6',
-    color: '#ffffff',
-    boxShadow: '0 8px 18px rgba(59,130,246,0.35)'
-  },
-  merchantInfo: {
-    display: 'flex',
-    gap: 8,
-    alignItems: 'center'
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    background: '#0f172a',
-    color: '#fff',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 800
-  },
-  main: {
-    flex: 1,
-    padding: '20px 28px'
-  },
-  pageWrapper: {
-    backgroundColor: '#ffffff',
-    borderRadius: 14,
-    border: '1px solid #e2e8f0',
-    padding: 24,
-    boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)'
-  },
-  logoutButton: {
-    background: 'transparent',
-    border: '1px solid rgba(226,232,240,0.08)',
-    color: '#e2e8f0',
-    padding: '6px 10px',
-    borderRadius: 8,
-    cursor: 'pointer',
-    fontWeight: 700
-  }
 };
 
 export default App;

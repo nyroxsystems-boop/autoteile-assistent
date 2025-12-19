@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-type Lang = 'de' | 'en' | 'pl';
+type Lang = 'de' | 'en' | 'pl' | 'fr' | 'es' | 'it' | 'nl' | 'tr';
 
 const DEFAULT = 'de' as Lang;
 
@@ -73,10 +73,27 @@ const TRANSLATIONS: Record<Lang, Record<string, string>> = {
     standardMargin: 'Domyślna marża (%)',
     shopsSelect: 'Wybierz sklepy',
     chooseLanguagePrompt: 'Wybierz język',
-  }
+  },
+  // zusätzliche Sprachen reuse-en/de Texte, damit Auswahl möglich ist
+  fr: {},
+  es: {},
+  it: {},
+  nl: {},
+  tr: {}
 };
 
 const KEY = 'dashboard_lang';
+
+export const languageOptions: Array<{ code: Lang; label: string }> = [
+  { code: 'de', label: 'Deutsch' },
+  { code: 'en', label: 'English' },
+  { code: 'pl', label: 'Polski' },
+  { code: 'fr', label: 'Français' },
+  { code: 'es', label: 'Español' },
+  { code: 'it', label: 'Italiano' },
+  { code: 'nl', label: 'Nederlands' },
+  { code: 'tr', label: 'Türkçe' }
+];
 
 const I18nContext = createContext<{
   lang: Lang;

@@ -13,10 +13,10 @@ const logError = (context: string, error: unknown) => {
 
 export const listOrders = async (): Promise<Order[]> => {
   console.log('[ordersApi] listOrders() called');
-  console.log('[ordersApi] listOrders() request config', { method: 'GET', url: '/dashboard/orders' });
+  console.log('[ordersApi] listOrders() request config', { method: 'GET', url: '/api/dashboard/orders' });
 
   try {
-    const orders = await apiClient.get<Order[]>('/dashboard/orders');
+    const orders = await apiClient.get<Order[]>('/api/dashboard/orders');
     console.log('[ordersApi] listOrders() success', { count: orders?.length ?? 0 });
     return orders;
   } catch (error) {
@@ -27,10 +27,10 @@ export const listOrders = async (): Promise<Order[]> => {
 
 export const getOrder = async (id: string): Promise<Order> => {
   console.log('[ordersApi] getOrder() called', { id });
-  console.log('[ordersApi] getOrder() request config', { method: 'GET', url: `/dashboard/orders/${id}` });
+  console.log('[ordersApi] getOrder() request config', { method: 'GET', url: `/api/dashboard/orders/${id}` });
 
   try {
-    const order = await apiClient.get<Order>(`/dashboard/orders/${id}`);
+    const order = await apiClient.get<Order>(`/api/dashboard/orders/${id}`);
     console.log('[ordersApi] getOrder() success', { id: order?.id ?? id, status: order?.status });
     return order;
   } catch (error) {
@@ -43,11 +43,11 @@ export const getOrderOffers = async (orderId: string): Promise<ShopOffer[]> => {
   console.log('[ordersApi] getOrderOffers() called', { orderId });
   console.log('[ordersApi] getOrderOffers() request config', {
     method: 'GET',
-    url: `/dashboard/orders/${orderId}/offers`
+    url: `/api/dashboard/orders/${orderId}/offers`
   });
 
   try {
-    const offers = await apiClient.get<ShopOffer[]>(`/dashboard/orders/${orderId}/offers`);
+    const offers = await apiClient.get<ShopOffer[]>(`/api/dashboard/orders/${orderId}/offers`);
     console.log('[ordersApi] getOrderOffers() success', { orderId, count: offers?.length ?? 0 });
     return offers;
   } catch (error) {
@@ -63,13 +63,13 @@ export const publishOffers = async (
   console.log('[ordersApi] publishOffers() called', { orderId, offerIds });
   console.log('[ordersApi] publishOffers() request config', {
     method: 'POST',
-    url: `/dashboard/orders/${orderId}/offers/publish`,
+    url: `/api/dashboard/orders/${orderId}/offers/publish`,
     body: { offerIds }
   });
 
   try {
     const response = await apiClient.post<{ success: boolean }>(
-      `/dashboard/orders/${orderId}/offers/publish`,
+      `/api/dashboard/orders/${orderId}/offers/publish`,
       { offerIds }
     );
     console.log('[ordersApi] publishOffers() success', { orderId, offerIds, response });

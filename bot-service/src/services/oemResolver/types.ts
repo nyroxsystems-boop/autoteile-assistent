@@ -1,4 +1,4 @@
-import type { TecdocPartsouqResult } from "./tecdocPartsouqFlow";
+// tecdocPartsouqFlow type not present in repo; use `any` for now to avoid missing import
 
 export interface OEMResolverRequest {
   orderId: string;
@@ -20,7 +20,7 @@ export interface OEMResolverRequest {
 
 export interface OEMCandidate {
   oem: string;
-  brand?: string;
+  brand?: string | null;
   source: string; // e.g. "tecdoc_light", "shop_autodoc", "llm_inferred"
   confidence: number; // 0.0–1.0
   meta?: Record<string, any>;
@@ -31,5 +31,5 @@ export interface OEMResolverResult {
   candidates: OEMCandidate[];
   overallConfidence: number;
   notes?: string;
-  tecdocPartsouqResult?: TecdocPartsouqResult;
+  tecdocPartsouqResult?: any;
 }
