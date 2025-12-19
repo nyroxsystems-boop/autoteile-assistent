@@ -41,6 +41,7 @@ def build_order_state_response(request, order: ExternalOrder) -> dict:
             'type': d.type,
             'status': d.status,
             'number': d.number,
+            'error': d.error or None,
             'pdf_url': f"/api/ext/documents/{d.id}/pdf/",
         })
 
@@ -95,7 +96,7 @@ class ExternalOrderView(APIView):
                 if order is None:
                     return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
                 return Response(build_order_state_response(request, order), status=status.HTTP_200_OK)
-            if existing_job.status in [Job.Status.QUEUED, Job.Status.RUNNING]:
+            if existing_job.status in [Job.Status.QUEUED, Job.Status.FAILED, Job.Status.RUNNING]:
                 return Response(
                     {'ok': True, 'job_id': str(existing_job.id), 'order_id': str(order_id), 'status': existing_job.status},
                     status=status.HTTP_202_ACCEPTED,
@@ -201,7 +202,7 @@ class ExternalDocumentCreateView(APIView):
                     },
                     status=status.HTTP_200_OK,
                 )
-            if existing_job.status in [Job.Status.QUEUED, Job.Status.RUNNING]:
+            if existing_job.status in [Job.Status.QUEUED, Job.Status.FAILED, Job.Status.RUNNING]:
                 return Response(
                     {
                         'job_id': str(existing_job.id),
@@ -293,3 +294,32 @@ class ExternalDocumentPdfView(APIView):
         file_handle = doc.pdf_file.open('rb')
         filename = f"{doc.type.lower()}-{doc.number or doc.id}.pdf"
         return FileResponse(file_handle, content_type='application/pdf', as_attachment=True, filename=filename)
+
+
+class JobStatusView(APIView):
+    """GET status of a queued job (tenant-scoped)."""
+
+    permission_classes = [IsTenantOrServiceToken]
+
+    def get(self, request, job_id: str):
+        tenant = get_tenant(request)
+        if tenant is None:
+            return Response({'detail': 'Tenant required'}, status=status.HTTP_403_FORBIDDEN)
+
+        job = Job.objects.filter(tenant=tenant, id=job_id).first()
+        if job is None:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {
+                'id': str(job.id),
+                'type': job.type,
+                'status': job.status,
+                'attempts': job.attempts,
+                'max_attempts': job.max_attempts,
+                'run_at': job.run_at.isoformat() if job.run_at else None,
+                'last_error': job.last_error or '',
+                'created_at': job.created_at.isoformat() if job.created_at else None,
+                'updated_at': job.updated_at.isoformat() if job.updated_at else None,
+            }
+        )

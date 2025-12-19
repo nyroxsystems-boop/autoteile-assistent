@@ -41,7 +41,10 @@ def backoff_delay(attempts: int) -> timedelta:
 
 def _select_next_job() -> Job | None:
     now = timezone.now()
-    qs = Job.objects.filter(status=Job.Status.QUEUED, run_at__lte=now).order_by('run_at', 'created_at')
+    qs = Job.objects.filter(
+        status__in=[Job.Status.QUEUED, Job.Status.FAILED],
+        run_at__lte=now,
+    ).order_by('run_at', 'created_at')
 
     if connection.features.has_select_for_update:
         kwargs = {}
@@ -50,6 +53,43 @@ def _select_next_job() -> Job | None:
         qs = qs.select_for_update(**kwargs)
 
     return qs.first()
+
+
+class NonRetryableJobError(Exception):
+    """Exception type which marks a job as dead immediately."""
+
+
+def _extract_http_status(exc: Exception) -> int | None:
+    """Try to extract a HTTP status code from a raised exception."""
+    status_code = getattr(exc, 'status_code', None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(exc, 'response', None)
+    response_status = getattr(response, 'status_code', None)
+    if isinstance(response_status, int):
+        return response_status
+
+    return None
+
+
+def _should_retry(exc: Exception) -> bool:
+    """Return True if this exception should be retried."""
+    if isinstance(exc, NonRetryableJobError):
+        return False
+    if isinstance(exc, (ValueError, TypeError, PermissionError)):
+        return False
+
+    http_status = _extract_http_status(exc)
+    if http_status in [401, 403]:
+        return False
+    if http_status == 429:
+        return True
+    if http_status and http_status >= 500:
+        return True
+
+    # Default: retry up to max_attempts (covers transient DB/network/IO issues)
+    return True
 
 
 def process_one_job() -> bool:
@@ -92,11 +132,15 @@ def process_one_job() -> bool:
         job.attempts += 1
         job.last_error = f'{type(exc).__name__}: {exc}'
 
+        should_retry = _should_retry(exc) and job.attempts < job.max_attempts
+
         if job.type == Job.JobType.GENERATE_DOCUMENT:
             document_id = job.payload.get('document_id')
             if document_id:
+                # During retries the document can stay "creating"; once the job is terminal, mark "failed".
                 ExternalDocument.objects.filter(tenant=job.tenant, id=document_id).update(
-                    status=ExternalDocument.Status.FAILED, error=job.last_error
+                    status=ExternalDocument.Status.CREATING if should_retry else ExternalDocument.Status.FAILED,
+                    error=job.last_error,
                 )
 
         logger.warning(
@@ -109,8 +153,8 @@ def process_one_job() -> bool:
             exc_info=True,
         )
 
-        if job.attempts < job.max_attempts:
-            job.status = Job.Status.QUEUED
+        if should_retry:
+            job.status = Job.Status.FAILED
             job.run_at = timezone.now() + backoff_delay(job.attempts)
         else:
             job.status = Job.Status.DEAD
@@ -156,7 +200,11 @@ def _next_document_number(tenant, doc_type: str) -> str:
 
 
 def _render_document_pdf_bytes(doc: ExternalDocument) -> bytes:
-    """Render a minimal PDF using WeasyPrint (fallback to HTML bytes if missing)."""
+    """Render a minimal PDF using WeasyPrint.
+
+    If WeasyPrint (or its system dependencies) are not available, raise a
+    NonRetryableJobError so the document becomes "failed" quickly.
+    """
     payload = doc.order.payload or {}
     customer = payload.get('customer') or {}
     lines = payload.get('lines') or []
@@ -190,10 +238,15 @@ def _render_document_pdf_bytes(doc: ExternalDocument) -> bytes:
 
     try:
         from weasyprint import HTML
+    except Exception as exc:  # pragma: no cover
+        raise NonRetryableJobError(
+            'WeasyPrint is not available in the runtime. Install system PDF deps (cairo/pango) and the weasyprint Python package.'
+        ) from exc
 
+    try:
         return HTML(string=html_content).write_pdf()
-    except Exception:  # pragma: no cover - keep worker resilient if dependency missing
-        return html_content.encode('utf-8')
+    except Exception as exc:  # pragma: no cover
+        raise NonRetryableJobError(f'WeasyPrint failed to render PDF: {exc}') from exc
 
 
 def _handle_generate_document(job: Job) -> None:

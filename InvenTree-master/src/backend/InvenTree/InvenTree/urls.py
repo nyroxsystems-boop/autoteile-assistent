@@ -165,6 +165,9 @@ backendpatterns = [
 
 urlpatterns = []
 
+# Ops health probe (no auth)
+urlpatterns += [path('healthz', HealthView.as_view(), name='healthz')]
+
 if settings.INVENTREE_ADMIN_ENABLED:
     admin_url = settings.INVENTREE_ADMIN_URL
 
