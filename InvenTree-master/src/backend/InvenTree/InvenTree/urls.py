@@ -6,6 +6,7 @@ Passes URL lookup downstream to each app as required.
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic.base import RedirectView
@@ -49,6 +50,26 @@ from .api import (
 from .config import get_setting
 from .magic_login import GetSimpleLoginView
 from .views import auth_request
+
+import os
+
+print(
+    "URLCONF LOADED:",
+    __file__,
+    "DJANGO_SETTINGS_MODULE=",
+    os.environ.get("DJANGO_SETTINGS_MODULE"),
+)
+
+
+def __whoami__(request):
+    return JsonResponse({
+        "urlconf_file": __file__,
+        "settings_module": os.environ.get("DJANGO_SETTINGS_MODULE"),
+        "root_urlconf": getattr(settings, "ROOT_URLCONF", None),
+        "debug": getattr(settings, "DEBUG", None),
+        "pythonpath": os.environ.get("PYTHONPATH"),
+        "config_file": os.environ.get("INVENTREE_CONFIG_FILE"),
+    })
 
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
@@ -165,6 +186,9 @@ backendpatterns = [
 ]
 
 urlpatterns = []
+
+# Debug helper to confirm active urlconf
+urlpatterns += [path('__whoami__', __whoami__)]
 
 # Ops health probe (no auth)
 urlpatterns += [
