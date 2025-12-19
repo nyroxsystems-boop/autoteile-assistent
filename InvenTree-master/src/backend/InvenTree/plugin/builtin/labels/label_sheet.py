@@ -1,17 +1,26 @@
 """Label printing plugin which supports printing multiple labels on a single page."""
 
 import math
+import os
 
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.utils.translation import gettext_lazy as _
 
 import structlog
-try:  # pragma: no cover - allow environments without system deps to proceed
-    import weasyprint
-except OSError as err:
-    weasyprint = None
-    print(f'OSError importing weasyprint in label_sheet: {err}')
+
+DISABLE_WEASYPRINT = os.getenv("INVENTREE_DISABLE_WEASYPRINT", "").lower() in ("1", "true", "yes")
+weasyprint = None
+
+if not DISABLE_WEASYPRINT:  # pragma: no cover - allow environments without system deps to proceed
+    try:
+        import weasyprint  # type: ignore
+    except OSError as err:
+        weasyprint = None
+        print(f'OSError importing weasyprint in label_sheet: {err}')
+else:
+    print("WeasyPrint disabled via INVENTREE_DISABLE_WEASYPRINT")
+
 from rest_framework import serializers
 
 import report.helpers
@@ -172,6 +181,8 @@ class InvenTreeLabelSheetPlugin(LabelPrintingMixin, SettingsMixin, InvenTreePlug
             generated_file = ContentFile(html_data, 'labels.html')
         else:
             # Render HTML to PDF
+            if weasyprint is None:
+                raise RuntimeError("WeasyPrint disabled/unavailable (INVENTREE_DISABLE_WEASYPRINT)")
             html = weasyprint.HTML(string=html_data)
             document = html.render().write_pdf()
             generated_file = ContentFile(document, 'labels.pdf')

@@ -42,6 +42,7 @@ from .api import (
     InfoView,
     LicenseView,
     NotFoundView,
+    ReadyView,
     VersionTextView,
     VersionView,
 )
@@ -166,7 +167,10 @@ backendpatterns = [
 urlpatterns = []
 
 # Ops health probe (no auth)
-urlpatterns += [path('healthz', HealthView.as_view(), name='healthz')]
+urlpatterns += [
+    path('healthz', HealthView.as_view(), name='healthz'),
+    path('readyz', ReadyView.as_view(), name='readyz'),
+]
 
 if settings.INVENTREE_ADMIN_ENABLED:
     admin_url = settings.INVENTREE_ADMIN_URL
@@ -185,6 +189,7 @@ urlpatterns += [  # API URLs
     path('api/docs/', SpectacularRedocView.as_view(url_name='schema'), name='api-docs'),
     path('api/schema/', SpectacularAPIView.as_view(custom_settings={'SCHEMA_PATH_PREFIX': '/api/'}), name='api-schema'),
 ]
+urlpatterns += [path('', include('wawitest.urls'))]
 urlpatterns += [path('', include(wws.api.dashboard_urls))]
 urlpatterns += platform_urls
 

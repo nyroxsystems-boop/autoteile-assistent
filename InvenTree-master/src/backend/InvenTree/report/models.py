@@ -34,13 +34,17 @@ from InvenTree.models import MetadataMixin
 from plugin import InvenTreePlugin, PluginMixinEnum
 from plugin.registry import registry
 
-try:
-    from weasyprint import HTML
-except OSError as err:  # pragma: no cover
-    print(f'OSError: {err}')
-    print("Unable to import 'weasyprint' module.")
-    print('You may require some further system packages to be installed.')
-    # Do not hard-exit to allow environments without system deps to run migrations/tests
+DISABLE_WEASYPRINT = os.getenv("INVENTREE_DISABLE_WEASYPRINT", "").lower() in ("1", "true", "yes")
+HTML = None
+
+if not DISABLE_WEASYPRINT:  # pragma: no cover
+    try:
+        from weasyprint import HTML  # type: ignore
+    except Exception:
+        print("Unable to import 'weasyprint' module.")
+        HTML = None
+else:
+    print("WeasyPrint disabled via INVENTREE_DISABLE_WEASYPRINT")
     HTML = None
 
 
@@ -273,6 +277,8 @@ class ReportTemplateBase(MetadataMixin, InvenTree.models.InvenTreeModel):
             bytes: PDF data
         """
         html = self.render_as_string(instance, request, context, **kwargs)
+        if HTML is None:
+            raise RuntimeError("WeasyPrint disabled/unavailable (INVENTREE_DISABLE_WEASYPRINT)")
         pdf = HTML(string=html).write_pdf(pdf_forms=True)
 
         return pdf

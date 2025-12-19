@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.http import JsonResponse
 from django.utils.translation import gettext_lazy as _
 
@@ -354,6 +354,38 @@ class HealthView(APIView):
     def get(self, request, *args, **kwargs):
         """Return basic health info."""
         return JsonResponse({'status': 'ok'})
+
+
+class ReadyView(APIView):
+    """Readiness probe with DB check and simple stuck counts."""
+
+    permission_classes = []
+
+    def get(self, request, *args, **kwargs):
+        """Return readiness status."""
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1')
+        except Exception:
+            return JsonResponse({'status': 'not ready', 'db': 'down'}, status=503)
+
+        data = {'status': 'ready', 'db': 'ok'}
+
+        # Optional: include simple stuck counts if models are available
+        try:
+            from wawitest.models import Document, Job  # pylint: disable=import-outside-toplevel
+            from django.utils import timezone  # pylint: disable=import-outside-toplevel
+            from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+            cutoff = timezone.now() - timedelta(minutes=30)
+            data['jobs_failed'] = Job.objects.filter(status=Job.Status.FAILED).count()
+            data['docs_stuck'] = Document.objects.filter(
+                status=Document.Status.CREATING, updated_at__lt=cutoff
+            ).count()
+        except Exception:
+            pass
+
+        return JsonResponse(data)
 
 
 class NotFoundView(APIView):

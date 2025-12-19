@@ -297,6 +297,7 @@ INSTALLED_APPS = [
     'channels.apps.ChannelsConfig',
     'wws.apps.WwsConfig',
     'extsync.apps.ExtsyncConfig',
+    'wawitest.apps.WawiTestConfig',
     'billing.apps.BillingConfig',
     'audit.apps.AuditConfig',
     'outbox.apps.OutboxConfig',
@@ -349,6 +350,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = CONFIG.get(
     'middleware',
     [
+        'tenancy.middleware.SubdomainTenantMiddleware',
         'django.middleware.security.SecurityMiddleware',
         'whitenoise.middleware.WhiteNoiseMiddleware',
         'x_forwarded_for.middleware.XForwardedForMiddleware',
@@ -374,6 +376,8 @@ MIDDLEWARE = CONFIG.get(
         'django_structlog.middlewares.RequestMiddleware',  # Structured logging
     ],
 )
+if 'tenancy.middleware.SubdomainTenantMiddleware' not in MIDDLEWARE:
+    MIDDLEWARE.insert(0, 'tenancy.middleware.SubdomainTenantMiddleware')
 
 # In DEBUG mode, add support for django-silk
 # Ref: https://silk.readthedocs.io/en/latest/
@@ -1180,6 +1184,9 @@ for i, host in enumerate(ALLOWED_HOSTS):
     if ':' in host:
         ALLOWED_HOSTS[i] = host = host.split(':')[0]
 
+if '.euredomain.de' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('.euredomain.de')
+
 # List of trusted origins for unsafe requests
 # Ref: https://docs.djangoproject.com/en/4.2/ref/settings/#csrf-trusted-origins
 CSRF_TRUSTED_ORIGINS = get_setting(
@@ -1203,6 +1210,14 @@ if DEBUG:
     ]:
         if origin not in CSRF_TRUSTED_ORIGINS:
             CSRF_TRUSTED_ORIGINS.append(origin)
+
+if 'https://*.euredomain.de' not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append('https://*.euredomain.de')
+for dev_origin in ['http://localhost', 'http://127.0.0.1']:
+    if dev_origin not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(dev_origin)
+    if dev_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(dev_origin)
 
 if (
     not TESTING and len(CSRF_TRUSTED_ORIGINS) == 0 and isInMainThread()

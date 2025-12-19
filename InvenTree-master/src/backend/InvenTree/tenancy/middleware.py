@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from django.http import HttpResponseForbidden
+from django.http import Http404, HttpResponseForbidden
 from django.utils.deprecation import MiddlewareMixin
 from rest_framework_simplejwt.backends import TokenBackend
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenBackendError
@@ -14,6 +14,46 @@ from .models import ServiceToken, Tenant, TenantUser
 from audit.utils import log_audit
 
 logger = logging.getLogger('inventree')
+
+
+class SubdomainTenantMiddleware(MiddlewareMixin):
+    """Resolve tenant from subdomain: <slug>.euredomain.de -> request.tenant."""
+
+    def process_request(self, request):
+        host = (request.get_host() or '').split(':')[0]
+        parts = host.split('.')
+
+        # Not enough parts to contain a subdomain => no tenant context
+        if len(parts) < 3:
+            request.tenant = None
+            request.tenant_id = None
+            request.tenant_user = None
+            logger.debug('tenant.resolve', extra={'host': host, 'slug': None, 'tenant': None})
+            return None
+
+        slug = parts[0].lower()
+        tenant = Tenant.objects.filter(slug=slug, status='active', is_active=True).first()
+        if not tenant:
+            raise Http404('Tenant not found')
+
+        request.tenant = tenant
+        request.tenant_id = tenant.id
+
+        tenant_user = None
+        user = getattr(request, 'user', None)
+        if user and getattr(user, 'is_authenticated', False):
+            tenant_user = (
+                TenantUser.objects.filter(
+                    tenant=tenant, user=user, is_active=True
+                ).first()
+            )
+        request.tenant_user = tenant_user
+        logger.debug(
+            'tenant.resolve',
+            extra={'host': host, 'slug': slug, 'tenant': getattr(tenant, "id", None)},
+        )
+        set_current_tenant(tenant)
+        return None
 
 
 class TenantContextMiddleware(MiddlewareMixin):
@@ -33,7 +73,17 @@ class TenantContextMiddleware(MiddlewareMixin):
 
     def process_request(self, request):
         """Attach tenant to request and thread-local context."""
+        # If a previous middleware (subdomain) already set tenant, respect it.
+        if getattr(request, 'tenant', None):
+            set_current_tenant(request.tenant)
+            # tenant_user might already be present; ensure a default attribute exists
+            if not hasattr(request, 'tenant_user'):
+                request.tenant_user = None
+            request.tenant_role = getattr(request.tenant_user, 'role', None)
+            return
+
         request.tenant = None
+        request.tenant_user = None
         request.tenant_role = None
         claims = self._decode_token(request)
 
