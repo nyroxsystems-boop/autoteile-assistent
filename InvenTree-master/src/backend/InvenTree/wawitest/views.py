@@ -120,15 +120,15 @@ def run_one(request):
     return redirect('wawitest:dashboard')
 
 
-@require_http_methods(['GET', 'OPTIONS'])
 @csrf_exempt
+@require_http_methods(['GET', 'OPTIONS'])
 def bot_health(request):
     """Simple liveness endpoint for dashboard pings."""
-    return JsonResponse({'status': 'ok', 'timestamp': __import__('datetime').datetime.now().isoformat()})
+    return JsonResponse({'status': 'ok'})
 
 
-@require_http_methods(['GET', 'OPTIONS'])
 @csrf_exempt
+@require_http_methods(['GET', 'OPTIONS'])
 def dashboard_orders(request):
     """Placeholder orders endpoint to keep dashboard functional."""
     return JsonResponse({'count': 0, 'results': []})
