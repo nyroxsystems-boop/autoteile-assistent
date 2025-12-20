@@ -42,6 +42,9 @@ Wenn PDF-Jobs trotz Worker direkt fehlschlagen, prüfe im Worker-Log nach:
 - `DATABASE_URL=postgres://...` (oder die bestehenden `INVENTREE_DB_*` Variablen)
 - `INVENTREE_STATIC_ROOT=/var/data/static` (oder Render Default)
 - `INVENTREE_MEDIA_ROOT=/var/data/media` (oder Render Default)
+- **Admin aktivieren:** `INVENTREE_ADMIN_ENABLED=true`
+- **Optional Admin Pfad:** `INVENTREE_ADMIN_URL=admin/` (ohne führenden Slash; trailing Slash egal, wird bereinigt)
+- (Nur falls nötig) `DJANGO_SETTINGS_MODULE=InvenTree.settings_render`
 
 Hinweis: Render-Dateisystem ist i.d.R. **ephemeral**. Für langlebige PDFs sollte MEDIA auf ein dauerhaftes Storage zeigen (z.B. S3 via `django-storages`), sonst können Downloads nach Deploy/Restart verschwinden.
 
@@ -51,6 +54,8 @@ Health:
 ```bash
 curl -sS https://wawi-new.onrender.com/healthz
 curl -sS https://wawi-new.onrender.com/api/health/
+curl -sS https://wawi-new.onrender.com/__whoami__
+curl -I https://wawi-new.onrender.com/admin/   # erwartet 200 oder 302, kein 404
 ```
 
 Job Status (requires Bearer token):
@@ -64,4 +69,3 @@ Dokument-Flow (short):
 1) Upsert order (PUT `/api/ext/orders/<id>/` mit `Idempotency-Key`)
 2) Document anstoßen (POST `/api/ext/orders/<id>/documents/`)
 3) Poll `GET /api/ext/orders/<id>/` bis `documents[].status == ready|failed`
-
