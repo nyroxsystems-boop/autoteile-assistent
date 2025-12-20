@@ -214,7 +214,7 @@ urlpatterns += [  # API URLs
     path('api/schema/', SpectacularAPIView.as_view(custom_settings={'SCHEMA_PATH_PREFIX': '/api/'}), name='api-schema'),
 ]
 urlpatterns += [path('', include('wawitest.urls'))]
-urlpatterns += [path('', include(wws.api.dashboard_urls))]
+# Note: wws.api.dashboard_urls is already included in apipatterns above
 urlpatterns += platform_urls
 
 # Append custom plugin URLs (if custom plugin support is enabled)
