@@ -6,6 +6,8 @@ from django.contrib import messages
 from django.shortcuts import get_object_or_404, redirect, render
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
+from django.views.decorators.csrf import csrf_exempt
+from django.middleware.csrf import get_token
 
 from tenancy.authz import require_role, require_tenant
 from tenancy.models import TenantUser
@@ -77,7 +79,14 @@ def create_document(request):
 def retry_document(request, document_id: int):
     tenant = request.tenant
     doc = get_object_or_404(Document, tenant=tenant, id=document_id)
-    doc, job = retry_document(tenant=tenant, document_id=doc.id)
+    # Fixed: Import and call the service function correctly
+    doc, job = request_document_create(
+        tenant=tenant,
+        order_id=doc.order_id,
+        doc_type=doc.doc_type,
+        version=doc.version + 1,
+        created_by_user_id=getattr(request.user, 'id', None),
+    )
     if job:
         messages.success(request, f'Retry queued (job {job.id})')
     else:
@@ -112,12 +121,14 @@ def run_one(request):
 
 
 @require_http_methods(['GET', 'OPTIONS'])
+@csrf_exempt
 def bot_health(request):
     """Simple liveness endpoint for dashboard pings."""
-    return JsonResponse({'status': 'ok'})
+    return JsonResponse({'status': 'ok', 'timestamp': __import__('datetime').datetime.now().isoformat()})
 
 
 @require_http_methods(['GET', 'OPTIONS'])
+@csrf_exempt
 def dashboard_orders(request):
     """Placeholder orders endpoint to keep dashboard functional."""
     return JsonResponse({'count': 0, 'results': []})

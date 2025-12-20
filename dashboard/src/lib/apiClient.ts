@@ -12,7 +12,6 @@ const ENV_SERVICE_TOKEN = import.meta.env.VITE_WAWI_SERVICE_TOKEN;
 const isDev = import.meta.env.DEV;
 
 const SERVICE_PATHS = [
-  '/api/dashboard/',
   '/api/orders',
   '/api/offers',
   '/api/suppliers',
