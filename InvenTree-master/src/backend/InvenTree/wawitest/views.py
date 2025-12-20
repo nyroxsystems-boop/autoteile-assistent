@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from django.contrib import messages
 from django.shortcuts import get_object_or_404, redirect, render
+from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 
 from tenancy.authz import require_role, require_tenant
@@ -108,3 +109,15 @@ def run_one(request):
     run_job(job.id)
     messages.success(request, f'Job {job.id} processed.')
     return redirect('wawitest:dashboard')
+
+
+@require_http_methods(['GET', 'OPTIONS'])
+def bot_health(request):
+    """Simple liveness endpoint for dashboard pings."""
+    return JsonResponse({'status': 'ok'})
+
+
+@require_http_methods(['GET', 'OPTIONS'])
+def dashboard_orders(request):
+    """Placeholder orders endpoint to keep dashboard functional."""
+    return JsonResponse({'count': 0, 'results': []})

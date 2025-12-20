@@ -21,6 +21,29 @@ if _admin_env:
 else:
     INVENTREE_ADMIN_URL = (locals().get('INVENTREE_ADMIN_URL') or 'admin').strip('/')  # type: ignore
 
+# CORS override for Render (frontend on autoteile-dashboard.onrender.com)
+_cors_origins = ['https://autoteile-dashboard.onrender.com']
+try:
+    CORS_ALLOWED_ORIGINS = list(set(CORS_ALLOWED_ORIGINS + _cors_origins))  # type: ignore
+except Exception:
+    CORS_ALLOWED_ORIGINS = _cors_origins
+
+CORS_ALLOW_HEADERS = [
+    'authorization',
+    'content-type',
+    'accept',
+    'origin',
+]
+
+CORS_ALLOW_METHODS = [
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'OPTIONS',
+]
+
 # Fix: collectstatic ignoriert oft Dot-Folder (z.B. ".vite") wenn ein ".*" Ignore aktiv ist.
 # Wir setzen Ignore-Patterns explizit OHNE ".*", damit web/.vite/manifest.json mit eingesammelt wird.
 STATICFILES_IGNORE_PATTERNS = [
