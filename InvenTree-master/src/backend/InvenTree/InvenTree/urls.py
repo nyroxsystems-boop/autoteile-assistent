@@ -214,7 +214,9 @@ urlpatterns += [
     path('healthz', HealthView.as_view(), name='healthz'),
     path('readyz', ReadyView.as_view(), name='readyz'),
     path('api/bot/health', bot_health_proxy, name='bot-health-proxy'),
+    path('api/bot/health/', bot_health_proxy, name='bot-health-proxy-slash'),
     path('api/dashboard/orders', dashboard_orders_proxy, name='dashboard-orders-proxy'),
+    path('api/dashboard/orders/', dashboard_orders_proxy, name='dashboard-orders-proxy-slash'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:
