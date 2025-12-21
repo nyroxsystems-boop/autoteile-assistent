@@ -131,4 +131,4 @@ def bot_health(request):
 @require_http_methods(['GET', 'OPTIONS'])
 def dashboard_orders(request):
     """Placeholder orders endpoint to keep dashboard functional."""
-    return JsonResponse({'count': 0, 'results': []})
+    return JsonResponse([], safe=False)

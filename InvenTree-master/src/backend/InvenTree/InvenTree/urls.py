@@ -84,7 +84,7 @@ def bot_health_proxy(request):
 @csrf_exempt
 @require_http_methods(["GET", "OPTIONS"])
 def dashboard_orders_proxy(request):
-    return JsonResponse({"count": 0, "results": []})
+    return JsonResponse([], safe=False)
 
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
