@@ -61,6 +61,7 @@ print(
     "DJANGO_SETTINGS_MODULE=",
     os.environ.get("DJANGO_SETTINGS_MODULE"),
 )
+print("### PROXY ENDPOINTS COMMIT 8b9ca7d ENABLED ###")
 
 
 def __whoami__(request):
