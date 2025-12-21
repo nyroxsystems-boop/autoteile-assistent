@@ -32,7 +32,14 @@ class SubdomainTenantMiddleware(MiddlewareMixin):
             return None
 
         # Allow selected public endpoints without tenant lookup
-        if request.path.startswith(('/api/bot/health', '/api/dashboard/orders')):
+        if request.path.startswith((
+            '/api/bot/health',
+            '/api/dashboard/orders',
+            '/api/dashboard/offers',
+            '/api/dashboard/suppliers',
+            '/api/dashboard/wws-connections',
+            '/api/bot/inventory/by-oem',
+        )):
             request.tenant = None
             request.tenant_id = None
             request.tenant_user = None

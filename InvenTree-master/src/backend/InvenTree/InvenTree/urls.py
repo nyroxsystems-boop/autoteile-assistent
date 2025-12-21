@@ -86,6 +86,30 @@ def bot_health_proxy(request):
 def dashboard_orders_proxy(request):
     return JsonResponse([], safe=False)
 
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def dashboard_offers_proxy(request):
+    return JsonResponse([], safe=False)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def dashboard_suppliers_proxy(request):
+    return JsonResponse([], safe=False)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def dashboard_wws_connections_proxy(request):
+    return JsonResponse([], safe=False)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def inventory_by_oem_proxy(request, oem=None):
+    return JsonResponse({"oem": oem, "results": []})
+
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
     'INVENTREE_SITE_HEADER', 'customize.site_header', 'InvenTree Admin'
@@ -217,6 +241,14 @@ urlpatterns += [
     path('api/bot/health/', bot_health_proxy, name='bot-health-proxy-slash'),
     path('api/dashboard/orders', dashboard_orders_proxy, name='dashboard-orders-proxy'),
     path('api/dashboard/orders/', dashboard_orders_proxy, name='dashboard-orders-proxy-slash'),
+    path('api/dashboard/offers', dashboard_offers_proxy, name='dashboard-offers-proxy'),
+    path('api/dashboard/offers/', dashboard_offers_proxy, name='dashboard-offers-proxy-slash'),
+    path('api/dashboard/suppliers', dashboard_suppliers_proxy, name='dashboard-suppliers-proxy'),
+    path('api/dashboard/suppliers/', dashboard_suppliers_proxy, name='dashboard-suppliers-proxy-slash'),
+    path('api/dashboard/wws-connections', dashboard_wws_connections_proxy, name='dashboard-wws-connections-proxy'),
+    path('api/dashboard/wws-connections/', dashboard_wws_connections_proxy, name='dashboard-wws-connections-proxy-slash'),
+    path('api/bot/inventory/by-oem/<path:oem>', inventory_by_oem_proxy, name='inventory-by-oem-proxy'),
+    path('api/bot/inventory/by-oem/<path:oem>/', inventory_by_oem_proxy, name='inventory-by-oem-proxy-slash'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:
