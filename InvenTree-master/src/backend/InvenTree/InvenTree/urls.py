@@ -9,6 +9,7 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from django.views.generic.base import RedirectView
 
 from allauth.headless.urls import Client, build_urlpatterns
@@ -71,6 +72,18 @@ def __whoami__(request):
         "pythonpath": os.environ.get("PYTHONPATH"),
         "config_file": os.environ.get("INVENTREE_CONFIG_FILE"),
     })
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def bot_health_proxy(request):
+    return JsonResponse({"status": "ok"})
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def dashboard_orders_proxy(request):
+    return JsonResponse({"count": 0, "results": []})
 
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
@@ -199,6 +212,8 @@ urlpatterns += [path('__whoami__', __whoami__)]
 urlpatterns += [
     path('healthz', HealthView.as_view(), name='healthz'),
     path('readyz', ReadyView.as_view(), name='readyz'),
+    path('api/bot/health', bot_health_proxy, name='bot-health-proxy'),
+    path('api/dashboard/orders', dashboard_orders_proxy, name='dashboard-orders-proxy'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:
