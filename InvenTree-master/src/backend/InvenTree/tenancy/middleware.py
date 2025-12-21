@@ -31,6 +31,14 @@ class SubdomainTenantMiddleware(MiddlewareMixin):
             logger.debug('tenant.resolve', extra={'host': host, 'slug': None, 'tenant': None})
             return None
 
+        # Allow selected public endpoints without tenant lookup
+        if request.path.startswith(('/api/bot/health', '/api/dashboard/orders')):
+            request.tenant = None
+            request.tenant_id = None
+            request.tenant_user = None
+            logger.debug('tenant.resolve.bypass', extra={'host': host, 'path': request.path})
+            return None
+
         slug = parts[0].lower()
         tenant = Tenant.objects.filter(slug=slug, status='active', is_active=True).first()
         if not tenant:
