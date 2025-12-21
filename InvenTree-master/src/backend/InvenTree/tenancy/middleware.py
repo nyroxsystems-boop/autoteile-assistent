@@ -38,6 +38,7 @@ class SubdomainTenantMiddleware(MiddlewareMixin):
             '/api/dashboard/offers',
             '/api/dashboard/suppliers',
             '/api/dashboard/wws-connections',
+            '/api/wws-connections',
             '/api/bot/inventory/by-oem',
         )):
             request.tenant = None

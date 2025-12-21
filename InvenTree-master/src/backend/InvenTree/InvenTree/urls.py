@@ -110,6 +110,12 @@ def dashboard_wws_connections_proxy(request):
 def inventory_by_oem_proxy(request, oem=None):
     return JsonResponse({"oem": oem, "results": []})
 
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def wws_connections_proxy(request):
+    return JsonResponse([], safe=False)
+
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
     'INVENTREE_SITE_HEADER', 'customize.site_header', 'InvenTree Admin'
@@ -249,6 +255,8 @@ urlpatterns += [
     path('api/dashboard/wws-connections/', dashboard_wws_connections_proxy, name='dashboard-wws-connections-proxy-slash'),
     path('api/bot/inventory/by-oem/<path:oem>', inventory_by_oem_proxy, name='inventory-by-oem-proxy'),
     path('api/bot/inventory/by-oem/<path:oem>/', inventory_by_oem_proxy, name='inventory-by-oem-proxy-slash'),
+    path('api/wws-connections', wws_connections_proxy, name='wws-connections-proxy'),
+    path('api/wws-connections/', wws_connections_proxy, name='wws-connections-proxy-slash'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:
