@@ -54,6 +54,7 @@ from .magic_login import GetSimpleLoginView
 from .views import auth_request
 
 import os
+import uuid
 
 print(
     "URLCONF LOADED:",
@@ -108,13 +109,61 @@ def dashboard_wws_connections_proxy(request):
 @csrf_exempt
 @require_http_methods(["GET", "OPTIONS"])
 def inventory_by_oem_proxy(request, oem=None):
-    return JsonResponse({"oem": oem, "results": []})
+    sample_offers = [
+        {
+            "id": "demo-offer-1",
+            "provider": "demo_wws",
+            "sku": "SKU-123",
+            "name": "Bremsscheibe vorne",
+            "oem": oem,
+            "price": 79.9,
+            "currency": "EUR",
+            "stock": 12,
+            "deliveryTime": "1-2 Tage",
+        },
+        {
+            "id": "demo-offer-2",
+            "provider": "demo_wws",
+            "sku": "SKU-456",
+            "name": "Bremsbeläge Set",
+            "oem": oem,
+            "price": 49.5,
+            "currency": "EUR",
+            "stock": 5,
+            "deliveryTime": "2-4 Tage",
+        },
+    ]
+    return JsonResponse({"oemNumber": oem, "offers": sample_offers})
 
 
 @csrf_exempt
 @require_http_methods(["GET", "OPTIONS"])
 def wws_connections_proxy(request):
-    return JsonResponse([], safe=False)
+    sample = {
+        "id": "demo-wws-1",
+        "name": "Demo-WWS",
+        "type": "demo_wws",
+        "baseUrl": "https://demo-wws.example.com",
+        "isActive": True,
+        "authConfig": {},
+        "config": {},
+    }
+    if request.method == "GET":
+        return JsonResponse([sample], safe=False)
+    if request.method == "OPTIONS":
+        return JsonResponse({})
+    # For POST/PUT/DELETE just echo a demo object to satisfy the UI
+    payload = sample.copy()
+    payload["id"] = payload.get("id") or f"demo-{uuid.uuid4()}"
+    return JsonResponse(payload)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def wws_connections_test_proxy(request, conn_id=None):
+    if request.method == "OPTIONS":
+        return JsonResponse({})
+    return JsonResponse({"ok": True, "sampleResultsCount": 2})
 
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
@@ -257,6 +306,8 @@ urlpatterns += [
     path('api/bot/inventory/by-oem/<path:oem>/', inventory_by_oem_proxy, name='inventory-by-oem-proxy-slash'),
     path('api/wws-connections', wws_connections_proxy, name='wws-connections-proxy'),
     path('api/wws-connections/', wws_connections_proxy, name='wws-connections-proxy-slash'),
+    path('api/wws-connections/<path:conn_id>/test', wws_connections_test_proxy, name='wws-connections-test-proxy'),
+    path('api/wws-connections/<path:conn_id>/test/', wws_connections_test_proxy, name='wws-connections-test-proxy-slash'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:
