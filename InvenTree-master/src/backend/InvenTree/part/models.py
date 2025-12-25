@@ -47,6 +47,8 @@ import part.helpers as part_helpers
 import part.settings as part_settings
 import report.mixins
 import users.models
+from tenancy.models import TenantScopedModel
+from tenancy.managers import TenantTreeManager
 from build import models as BuildModels
 from build.status_codes import BuildStatusGroups
 from common.currency import currency_code_default
@@ -69,6 +71,7 @@ logger = structlog.get_logger('inventree')
 
 
 class PartCategory(
+    TenantScopedModel,
     InvenTree.models.PluginValidationMixin,
     InvenTree.models.MetadataMixin,
     InvenTree.models.PathStringMixin,
@@ -347,7 +350,7 @@ def rename_part_image(instance, filename):
     return os.path.join(base, fname)
 
 
-class PartManager(TreeManager):
+class PartManager(TenantTreeManager):
     """Defines a custom object manager for the Part model.
 
     The main purpose of this manager is to reduce the number of database hits,
@@ -484,6 +487,7 @@ class PartReportContext(report.mixins.BaseReportContext):
 
 @cleanup.ignore
 class Part(
+    TenantScopedModel,
     InvenTree.models.PluginValidationMixin,
     InvenTree.models.InvenTreeParameterMixin,
     InvenTree.models.InvenTreeAttachmentMixin,

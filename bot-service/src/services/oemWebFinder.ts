@@ -300,6 +300,44 @@ async function searchOemOn7zap(ctx: SearchContext): Promise<OemCandidate[]> {
   }
 }
 
+async function searchOemOnDaparto(ctx: SearchContext): Promise<OemCandidate[]> {
+  try {
+    // Daparto allows specific constructed URLs if we have HSN/TSN, but Google Search is often better
+    // to land on the specific category page.
+    // Strategy: Search via DDG or similar ("site:daparto.de Golf 7 Bremsbeläge hinten")
+
+    // We try a direct search URL which Daparto often redirects to results
+    const q = [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
+    const url = `https://html.duckduckgo.com/html?q=${encodeURIComponent("site:daparto.de " + q)}`;
+
+    const html = await fetchTextWithFallback(url);
+    const oems = extractOemsFromHtml(html);
+
+    // AI check on the search result snippet
+    const aiOems = await aiExtractOemsFromHtml(html, ctx);
+
+    return [...oems, ...aiOems].map((o: string) => ({ source: "Daparto_Search", rawValue: o, normalized: o }));
+  } catch {
+    return [];
+  }
+}
+
+async function searchOemOnMotointegrator(ctx: SearchContext): Promise<OemCandidate[]> {
+  try {
+    const q = [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
+    const url = `https://www.motointegrator.de/suche/result/?q=${encodeURIComponent(q)}`;
+    const html = await fetchTextWithFallback(url);
+
+    // Motointegrator often lists "OE Nummer" in the product details cards
+    const oems = extractOemsFromHtml(html);
+    const aiOems = await aiExtractOemsFromHtml(html, ctx);
+
+    return [...oems, ...aiOems].map((o: string) => ({ source: "Motointegrator", rawValue: o, normalized: o }));
+  } catch {
+    return [];
+  }
+}
+
 // ----------------------------------
 // Fallback-Resolver (Platzhalter)
 // ----------------------------------
@@ -384,7 +422,9 @@ export async function findBestOemForVehicle(ctx: SearchContext, useFallback = tr
       searchOemOnAutodocParts(subCtx),
       searchOemOnSpareto(subCtx),
       searchOemOn7zap(subCtx),
-      searchOemOnSite5(subCtx)
+      searchOemOnSite5(subCtx),
+      searchOemOnDaparto(subCtx),
+      searchOemOnMotointegrator(subCtx)
     ]);
     const cands: OemCandidate[] = [];
     for (const r of results) {

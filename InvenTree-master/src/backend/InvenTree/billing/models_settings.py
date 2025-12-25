@@ -19,6 +19,16 @@ class BillingSettings(TenantScopedModel):
     email = models.EmailField(blank=True, default='')
     phone = models.CharField(max_length=64, blank=True, default='')
 
+    # Design Settings (Invoice Builder)
+    invoice_template = models.CharField(max_length=50, default='clean')
+    invoice_color = models.CharField(max_length=20, default='#2563eb')
+    invoice_font = models.CharField(max_length=50, default='inter')
+    logo_position = models.CharField(max_length=20, default='left')
+    number_position = models.CharField(max_length=20, default='right')
+    address_layout = models.CharField(max_length=20, default='two-column')
+    table_style = models.CharField(max_length=20, default='grid')
+    accent_color = models.CharField(max_length=20, default='#f3f4f6')
+
     class Meta:
         """Meta."""
 

@@ -5,7 +5,7 @@ if (!apiKey) {
   throw new Error("OPENAI_API_KEY is required but not set.");
 }
 
-const client = new OpenAI({ apiKey });
+export const client = new OpenAI({ apiKey });
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";

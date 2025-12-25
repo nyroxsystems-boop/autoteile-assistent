@@ -28,6 +28,8 @@ import InvenTree.validators
 import report.mixins
 from common.currency import currency_code_default
 from InvenTree.fields import InvenTreeURLField, RoundingDecimalField
+from tenancy.models import TenantScopedModel
+from tenancy.managers import TenantManager
 from order.status_codes import PurchaseOrderStatusGroups
 
 
@@ -76,6 +78,7 @@ class CompanyReportContext(report.mixins.BaseReportContext):
 
 
 class Company(
+    TenantScopedModel,
     InvenTree.models.InvenTreeAttachmentMixin,
     InvenTree.models.InvenTreeParameterMixin,
     InvenTree.models.InvenTreeNotesMixin,
@@ -83,6 +86,8 @@ class Company(
     InvenTree.models.InvenTreeImageMixin,
     InvenTree.models.InvenTreeMetadataModel,
 ):
+
+    objects = TenantManager()
     """A Company object represents an external company.
 
     It may be a supplier or a customer or a manufacturer (or a combination)

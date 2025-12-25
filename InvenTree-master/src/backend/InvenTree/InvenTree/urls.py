@@ -82,88 +82,6 @@ def bot_health_proxy(request):
     return JsonResponse({"status": "ok"})
 
 
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def dashboard_orders_proxy(request):
-    return JsonResponse([], safe=False)
-
-
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def dashboard_offers_proxy(request):
-    return JsonResponse([], safe=False)
-
-
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def dashboard_suppliers_proxy(request):
-    return JsonResponse([], safe=False)
-
-
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def dashboard_wws_connections_proxy(request):
-    return JsonResponse([], safe=False)
-
-
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def inventory_by_oem_proxy(request, oem=None):
-    sample_offers = [
-        {
-            "id": "demo-offer-1",
-            "provider": "demo_wws",
-            "sku": "SKU-123",
-            "name": "Bremsscheibe vorne",
-            "oem": oem,
-            "price": 79.9,
-            "currency": "EUR",
-            "stock": 12,
-            "deliveryTime": "1-2 Tage",
-        },
-        {
-            "id": "demo-offer-2",
-            "provider": "demo_wws",
-            "sku": "SKU-456",
-            "name": "Bremsbeläge Set",
-            "oem": oem,
-            "price": 49.5,
-            "currency": "EUR",
-            "stock": 5,
-            "deliveryTime": "2-4 Tage",
-        },
-    ]
-    return JsonResponse({"oemNumber": oem, "offers": sample_offers})
-
-
-@csrf_exempt
-@require_http_methods(["GET", "OPTIONS"])
-def wws_connections_proxy(request):
-    sample = {
-        "id": "demo-wws-1",
-        "name": "Demo-WWS",
-        "type": "demo_wws",
-        "baseUrl": "https://demo-wws.example.com",
-        "isActive": True,
-        "authConfig": {},
-        "config": {},
-    }
-    if request.method == "GET":
-        return JsonResponse([sample], safe=False)
-    if request.method == "OPTIONS":
-        return JsonResponse({})
-    # For POST/PUT/DELETE just echo a demo object to satisfy the UI
-    payload = sample.copy()
-    payload["id"] = payload.get("id") or f"demo-{uuid.uuid4()}"
-    return JsonResponse(payload)
-
-
-@csrf_exempt
-@require_http_methods(["POST", "OPTIONS"])
-def wws_connections_test_proxy(request, conn_id=None):
-    if request.method == "OPTIONS":
-        return JsonResponse({})
-    return JsonResponse({"ok": True, "sampleResultsCount": 2})
 
 # Set admin header from config or use default
 admin.site.site_header = get_setting(
@@ -217,6 +135,7 @@ apipatterns = [
     path('tenants/<int:pk>/', tenancy.api_admin.TenantAdminViewSet.as_view({'get': 'retrieve'}), name='tenant-detail'),
     path('tenants/<int:pk>/users/', tenancy.api_admin.TenantAdminViewSet.as_view({'post': 'create_user'}), name='tenant-create-user'),
     path('tenants/<int:pk>/whatsapp-channels/', tenancy.api_admin.TenantAdminViewSet.as_view({'post': 'create_channel'}), name='tenant-create-channel'),
+    path('admin-stats/', tenancy.api_admin.AdminStatsView.as_view(), name='api-admin-stats'),
     path('service-tokens/', tenancy.api_admin.ServiceTokenViewSet.as_view({'get': 'list', 'post': 'create'}), name='service-token-list'),
     # Plugin endpoints
     path('', include(plugin.api.plugin_api_urls)),
@@ -292,22 +211,6 @@ urlpatterns += [path('__whoami__', __whoami__)]
 urlpatterns += [
     path('healthz', HealthView.as_view(), name='healthz'),
     path('readyz', ReadyView.as_view(), name='readyz'),
-    path('api/bot/health', bot_health_proxy, name='bot-health-proxy'),
-    path('api/bot/health/', bot_health_proxy, name='bot-health-proxy-slash'),
-    path('api/dashboard/orders', dashboard_orders_proxy, name='dashboard-orders-proxy'),
-    path('api/dashboard/orders/', dashboard_orders_proxy, name='dashboard-orders-proxy-slash'),
-    path('api/dashboard/offers', dashboard_offers_proxy, name='dashboard-offers-proxy'),
-    path('api/dashboard/offers/', dashboard_offers_proxy, name='dashboard-offers-proxy-slash'),
-    path('api/dashboard/suppliers', dashboard_suppliers_proxy, name='dashboard-suppliers-proxy'),
-    path('api/dashboard/suppliers/', dashboard_suppliers_proxy, name='dashboard-suppliers-proxy-slash'),
-    path('api/dashboard/wws-connections', dashboard_wws_connections_proxy, name='dashboard-wws-connections-proxy'),
-    path('api/dashboard/wws-connections/', dashboard_wws_connections_proxy, name='dashboard-wws-connections-proxy-slash'),
-    path('api/bot/inventory/by-oem/<path:oem>', inventory_by_oem_proxy, name='inventory-by-oem-proxy'),
-    path('api/bot/inventory/by-oem/<path:oem>/', inventory_by_oem_proxy, name='inventory-by-oem-proxy-slash'),
-    path('api/wws-connections', wws_connections_proxy, name='wws-connections-proxy'),
-    path('api/wws-connections/', wws_connections_proxy, name='wws-connections-proxy-slash'),
-    path('api/wws-connections/<path:conn_id>/test', wws_connections_test_proxy, name='wws-connections-test-proxy'),
-    path('api/wws-connections/<path:conn_id>/test/', wws_connections_test_proxy, name='wws-connections-test-proxy-slash'),
 ]
 
 if settings.INVENTREE_ADMIN_ENABLED:

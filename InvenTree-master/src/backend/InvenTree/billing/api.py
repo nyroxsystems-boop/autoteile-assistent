@@ -133,6 +133,14 @@ class BillingSettingsViewSet(viewsets.ViewSet):
             'iban': settings_obj.iban,
             'email': settings_obj.email,
             'phone': settings_obj.phone,
+            'invoice_template': settings_obj.invoice_template,
+            'invoice_color': settings_obj.invoice_color,
+            'invoice_font': settings_obj.invoice_font,
+            'logo_position': settings_obj.logo_position,
+            'number_position': settings_obj.number_position,
+            'address_layout': settings_obj.address_layout,
+            'table_style': settings_obj.table_style,
+            'accent_color': settings_obj.accent_color,
         })
 
     def update(self, request, pk=None):
@@ -154,6 +162,14 @@ class BillingSettingsViewSet(viewsets.ViewSet):
             'iban',
             'email',
             'phone',
+            'invoice_template',
+            'invoice_color',
+            'invoice_font',
+            'logo_position',
+            'number_position',
+            'address_layout',
+            'table_style',
+            'accent_color',
         ]:
             if field in request.data:
                 setattr(settings_obj, field, request.data[field])

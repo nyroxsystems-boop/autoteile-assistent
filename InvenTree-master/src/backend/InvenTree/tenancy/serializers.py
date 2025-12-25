@@ -3,7 +3,18 @@
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
-from tenancy.models import TenantUser
+from tenancy.models import Tenant, TenantUser
+
+
+class TenantMembershipSerializer(serializers.ModelSerializer):
+    """Serializer for user tenant memberships."""
+
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    tenant_slug = serializers.CharField(source='tenant.slug', read_only=True)
+
+    class Meta:
+        model = TenantUser
+        fields = ['id', 'tenant', 'tenant_name', 'tenant_slug', 'role', 'is_active']
 
 
 class TenantLoginSerializer(serializers.Serializer):

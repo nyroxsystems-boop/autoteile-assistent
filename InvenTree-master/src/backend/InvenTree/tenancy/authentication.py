@@ -7,7 +7,7 @@ from rest_framework import authentication, exceptions
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from tenancy.context import set_current_tenant
-from tenancy.models import ServiceToken, Tenant
+from tenancy.models import ServiceToken, Tenant, TenantDevice
 
 logger = logging.getLogger('inventree')
 
@@ -52,6 +52,14 @@ class TenantJWTAuthentication(JWTAuthentication):
 
         request.tenant = tenant
         request.tenant_role = validated_token.get('role')
+        
+        # Verify device is still active if device_id is present
+        device_id = validated_token.get('device_id')
+        if device_id:
+            user = getattr(request, 'user', None)
+            if user and not TenantDevice.objects.filter(user=user, tenant=tenant, device_id=device_id).exists():
+                raise exceptions.AuthenticationFailed('Device session has been invalidated or expired')
+
         set_current_tenant(tenant)
 
 

@@ -27,6 +27,7 @@ const navGroups: NavGroup[] = [
     label: 'Verkauf',
     items: [
       { path: '/orders', label: 'Bestellungen' },
+      { path: '/sales/team', label: 'Team & Vertrieb' },
       { path: '/insights/conversion', label: 'Konversion & Abbrüche' }
     ]
   },

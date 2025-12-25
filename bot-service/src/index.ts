@@ -13,6 +13,15 @@ import orderAutoOrderRouter from "./routes/orderAutoOrder";
 import whatsappWebhookRouter from "./routes/whatsappWebhook";
 import { registerDashboardRoutes } from "./routes/dashboardRoutes";
 import { createInternalRouter } from "./routes/internalRoutes";
+import { initDb } from "./services/database";
+import "./queue/botWorker"; // Start Queue Worker
+import { createBotHealthRouter } from "./routes/botHealth";
+import { createSuppliersRouter } from "./routes/suppliers";
+import { createOffersRouter } from "./routes/offers";
+import { createWwsConnectionsRouter } from "./routes/wwsConnections";
+import authRouter from "./routes/authRoutes";
+import userRouter from "./routes/userRoutes";
+
 
 const app = express();
 
@@ -25,15 +34,15 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Datenbank-Healthcheck – Supabase-Verbindung funktioniert?
+// Datenbank-Healthcheck – Verbindung funktioniert?
 app.get("/health/db", async (_req, res) => {
   const result = await testDbConnection();
-  if (result.ok) {
+  if (result) {
     res.json({ status: "ok" });
   } else {
     res.status(500).json({
       status: "error",
-      error: result.error
+      error: "DB connection failed"
     });
   }
 });
@@ -57,11 +66,33 @@ app.use("/bot/message", botMessageRouter);
 // Twilio WhatsApp Webhook (receives form-encoded payloads)
 app.use("/webhook/whatsapp", whatsappWebhookRouter);
 
+// Auth API (no auth middleware - handles login)
+app.use("/api/auth", authRouter);
+
+// User Management API (requires auth)
+app.use("/api/users", userRouter);
+
 // Dashboard API
 registerDashboardRoutes(app);
 
+// Bot Health API
+app.use("/api/bot", createBotHealthRouter());
+
+// Suppliers API
+app.use("/api/suppliers", createSuppliersRouter());
+
+// Offers API  
+app.use("/api/offers", createOffersRouter());
+
+// WWS Connections API
+app.use("/api/wws-connections", createWwsConnectionsRouter());
+
 // Internal API
 app.use("/internal", createInternalRouter());
+
+// Admin / Sales API
+import { createAdminRouter } from "./routes/adminRoutes";
+app.use("/api/admin", createAdminRouter());
 
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte
@@ -69,6 +100,11 @@ app.use("/internal", createInternalRouter());
 app.use("/simulate/whatsapp", simulateWhatsappRouter);
 
 // Serverstart
-app.listen(env.port, () => {
-  console.log(`Bot service listening on port ${env.port}`);
+initDb().then(() => {
+  app.listen(env.port, () => {
+    console.log(`Bot service listening on port ${env.port}`);
+  });
+}).catch(err => {
+  console.error("Failed to init database", err);
+  process.exit(1);
 });

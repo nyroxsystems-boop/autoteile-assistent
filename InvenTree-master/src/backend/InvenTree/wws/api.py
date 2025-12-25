@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 from django.core.cache import cache
-from django.db import transaction
+from django.db import models, transaction
 from django.urls import include, path
 from django.utils import timezone
 from rest_framework import filters, mixins, status, viewsets
@@ -396,42 +396,139 @@ DEFAULT_PRICE_PROFILES = [
 
 
 class MerchantSettingsView(APIView):
-    """Dashboard merchant settings endpoints."""
+    """Dashboard merchant settings endpoints. Get/Set merchant settings."""
 
     permission_classes = [IsTenantOrServiceToken]
 
-    def get(self, request, merchant_id):
+    def get(self, request, merchant_id=None):
         tenant = getattr(request, 'tenant', None)
-        if tenant is None or str(tenant.id) != str(merchant_id):
-            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if tenant is None:
+             return Response({'detail': 'Tenant required'}, status=status.HTTP_403_FORBIDDEN)
+        
         settings_obj, _ = MerchantSettings.objects.get_or_create(
             tenant=tenant,
             defaults={
                 'selected_shops': [],
-                'margin_percent': 0,
-                'price_profiles': DEFAULT_PRICE_PROFILES,
+                'margin_percent': Decimal('0.00'),
+                'price_profiles': [],
             },
         )
         return Response({
             'merchantId': str(tenant.id),
             'selectedShops': settings_obj.selected_shops,
             'marginPercent': float(settings_obj.margin_percent),
-            'priceProfiles': settings_obj.price_profiles or DEFAULT_PRICE_PROFILES,
+            'priceProfiles': settings_obj.price_profiles,
         })
 
-    def post(self, request, merchant_id):
+    def post(self, request, merchant_id=None):
         tenant = getattr(request, 'tenant', None)
-        if tenant is None or str(tenant.id) != str(merchant_id):
-            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if tenant is None:
+            return Response({'detail': 'Tenant required'}, status=status.HTTP_403_FORBIDDEN)
+            
         settings_obj, _ = MerchantSettings.objects.get_or_create(tenant=tenant)
         if 'selectedShops' in request.data:
             settings_obj.selected_shops = request.data.get('selectedShops') or []
         if 'marginPercent' in request.data:
-            settings_obj.margin_percent = request.data.get('marginPercent') or 0
+            settings_obj.margin_percent = Decimal(str(request.data.get('marginPercent') or 0))
         if 'priceProfiles' in request.data:
             settings_obj.price_profiles = request.data.get('priceProfiles') or []
         settings_obj.save()
         return Response({'ok': True})
+
+
+class DashboardSummaryView(APIView):
+    """Aggregate stats for HeuteView."""
+
+    permission_classes = [IsTenantOrServiceToken]
+
+    def get(self, request):
+        tenant = getattr(request, 'tenant', None)
+        if tenant is None:
+            return Response({'detail': 'Tenant required'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Basic counts
+        orders_new = Order.objects.filter(tenant=tenant, status='new').count()
+        orders_in_progress = Order.objects.filter(tenant=tenant, status__in=['processing', 'collect_part']).count()
+        
+        invoices_issued = Invoice.objects.filter(tenant=tenant, status='ISSUED').count()
+        invoices_draft = Invoice.objects.filter(tenant=tenant, status='DRAFT').count()
+        
+        # Margin stats
+        margin_qs = Offer.objects.filter(
+            order__tenant=tenant,
+            status='published'
+        ).aggregate(avg_margin=models.Avg('meta_json__margin_percent'))
+        avg_margin = margin_qs['avg_margin'] or 0.0
+
+        # Estimate margin revenue from paid invoices (simplified)
+        paid_invoices_sum = Invoice.objects.filter(
+            tenant=tenant, status='PAID'
+        ).aggregate(models.Sum('total'))['total__sum'] or Decimal('0.00')
+        margin_revenue = float(paid_invoices_sum) * (float(avg_margin) / 100.0)
+
+        # Revenue history (last 14 days)
+        today = timezone.now().date()
+        revenue_today = Invoice.objects.filter(
+            tenant=tenant, 
+            status__in=['ISSUED', 'SENT', 'PAID'],
+            issue_date=today
+        ).aggregate(models.Sum('total'))['total__sum'] or Decimal('0.00')
+
+        last_14_days = []
+        for i in range(13, -1, -1):
+            day = today - timezone.timedelta(days=i)
+            rev = Invoice.objects.filter(
+                tenant=tenant,
+                status__in=['ISSUED', 'SENT', 'PAID'],
+                issue_date=day
+            ).aggregate(models.Sum('total'))['total__sum'] or Decimal('0.00')
+            last_14_days.append({
+                'date': day.strftime('%d.%m'),
+                'revenue': float(rev),
+                'orders': Order.objects.filter(tenant=tenant, created_at__date=day).count()
+            })
+
+        # Top customers (by invoice total)
+        top_customers_qs = Contact.objects.filter(tenant=tenant).annotate(
+            revenue=models.Sum('invoices__total', filter=models.Q(invoices__status__in=['ISSUED', 'SENT', 'PAID'])),
+            order_count=models.Count('orders', distinct=True)
+        ).order_by('-revenue')[:5]
+        
+        top_customers = []
+        for c in top_customers_qs:
+            top_customers.append({
+                'name': c.name or c.wa_id,
+                'revenue': float(c.revenue or 0),
+                'orders': c.order_count,
+                'avatar': (c.name or '??')[:2].upper()
+            })
+
+        # Recent activities
+        recent_orders = Order.objects.filter(tenant=tenant).select_related('contact').order_by('-updated_at')[:10]
+        activities = []
+        for o in recent_orders:
+            activities.append({
+                'id': f'order-{o.id}',
+                'type': 'order' if o.status != 'new' else 'message',
+                'customer': o.contact.name if o.contact else 'Unbekannt',
+                'description': f'Status: {o.status} | OEM: {o.oem or "N/A"}',
+                'time': o.updated_at.isoformat(),
+                'status': 'processing' if o.status in ['new', 'processing'] else 'success'
+            })
+
+        return Response({
+            'ordersNew': orders_new,
+            'ordersInProgress': orders_in_progress,
+            'invoicesDraft': invoices_draft,
+            'invoicesIssued': invoices_issued,
+            'revenueToday': float(revenue_today),
+            'revenueHistory': last_14_days,
+            'topCustomers': top_customers,
+            'activities': activities,
+            'avgMargin': float(avg_margin),
+            'marginRevenue': margin_revenue,
+            'lastSync': timezone.now().isoformat(),
+        })
 
 
 class RequestIntakeView(APIView):
@@ -492,5 +589,7 @@ api_urls = [
 dashboard_urls = [
     path('dashboard/', include(router.urls)),
     path('dashboard/dealers/<int:dealer_id>/suppliers', DealerSuppliersView.as_view(), name='dashboard-dealer-suppliers'),
-    path('dashboard/merchant/settings/<int:merchant_id>', MerchantSettingsView.as_view(), name='dashboard-merchant-settings'),
+    path('dashboard/merchant/settings/', MerchantSettingsView.as_view(), name='dashboard-merchant-settings'),
+    path('dashboard/merchant/settings/<int:merchant_id>', MerchantSettingsView.as_view(), name='dashboard-merchant-settings-id'),
+    path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
 ]

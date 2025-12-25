@@ -42,15 +42,7 @@ router.post("/", async (req: Request, res: Response) => {
     });
 
     // 2) Message speichern (eingehende WhatsApp-Nachricht)
-    const message = await insertMessage({
-      orderId: order.id,
-      direction: "incoming",
-      channel: "whatsapp",
-      fromIdentifier: from,
-      toIdentifier: null,
-      content: text,
-      rawPayload: req.body
-    });
+    const message = await insertMessage(from, text, "IN" as any);
 
     return res.status(201).json({
       message: "Simulated WhatsApp message processed. Order and message created.",

@@ -151,6 +151,9 @@ export const tecdocApi = {
   },
   searchArticlesByNumberAndSupplier(params: Record<string, any>) {
     return callTecDoc("/searchArticlesByNumberAndSupplier", params);
+  },
+  getVehicleByVin(params: Record<string, any>) {
+    return callTecDoc("/getVehicleByVin", params);
   }
 };
 

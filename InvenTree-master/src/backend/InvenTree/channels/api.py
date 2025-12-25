@@ -114,6 +114,24 @@ class ConversationUpsertView(APIView):
         return Response({'conversation': ConversationSerializer(conversation).data})
 
 
+class ConversationListView(APIView):
+    """List all conversations for the current tenant."""
+
+    permission_classes = [IsTenantOrServiceToken]
+
+    def get(self, request):
+        """Return list of conversations."""
+        tenant = _ensure_tenant(request)
+        if not tenant:
+            return Response(
+                {'detail': 'Tenant context required'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        conversations = Conversation.objects.filter(tenant=tenant).order_by('-last_message_at')
+        return Response(ConversationSerializer(conversations, many=True).data)
+
+
 whatsapp_api_urls = [
     path('resolve/', WhatsAppResolveView.as_view(), name='whatsapp-resolve'),
     path('contacts/upsert/', ContactUpsertView.as_view(), name='whatsapp-contact-upsert'),
@@ -121,5 +139,10 @@ whatsapp_api_urls = [
         'conversations/upsert/',
         ConversationUpsertView.as_view(),
         name='whatsapp-conversation-upsert',
+    ),
+    path(
+        'conversations/',
+        ConversationListView.as_view(),
+        name='whatsapp-conversation-list',
     ),
 ]

@@ -1,6 +1,7 @@
 // Lightweight compatibility wrapper: we no longer use Supabase.
 // Re-export the WAWI adapter functions so existing imports continue to work.
-export * from "./wawiAdapter";
+export * from "./inventreeAdapter";
+export { ConversationStatus } from "./wawiAdapter";
 
 // Provide a couple of no-op compatibility shims for functions that older code
 // expects from the Supabase wrapper but which are not part of the WAWI adapter.

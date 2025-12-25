@@ -23,6 +23,7 @@ import LegacyInvoiceRedirect from './pages/LegacyInvoiceRedirect';
 import OffersPage from './pages/OffersPage';
 import SuppliersPage from './pages/SuppliersPage';
 import WwsConnectionsPage from './pages/WwsConnectionsPage';
+import SalesTeamPage from './pages/SalesTeamPage';
 
 const Providers = () => (
   <I18nProvider>
@@ -58,6 +59,8 @@ const routes = [
           { path: 'offers', element: <OffersPage /> },
           { path: 'suppliers', element: <SuppliersPage /> },
           { path: 'wws-connections', element: <WwsConnectionsPage /> },
+          // Sales / Team
+          { path: 'sales/team', element: <SalesTeamPage /> },
           // Legacy redirects for invoices -> orders
           { path: 'invoices', element: <LegacyInvoiceRedirect /> },
           { path: 'invoices/:id', element: <LegacyInvoiceRedirect /> },

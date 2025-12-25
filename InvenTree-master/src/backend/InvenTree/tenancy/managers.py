@@ -31,3 +31,25 @@ class TenantManager(models.Manager):
     def for_tenant(self, tenant):
         """Shortcut to filter objects for a provided tenant."""
         return TenantQuerySet(self.model, using=self._db).for_tenant(tenant)
+
+
+try:
+    from mptt.managers import TreeManager
+    from mptt.querysets import TreeQuerySet
+
+    class TenantTreeQuerySet(TreeQuerySet, TenantQuerySet):
+        """QuerySet for tenant-aware MPTT models."""
+        pass
+
+    class TenantTreeManager(TreeManager, TenantManager):
+        """Manager for tenant-aware MPTT models."""
+
+        def get_queryset(self):
+            qs = TenantTreeQuerySet(self.model, using=self._db)
+            tenant = get_current_tenant()
+            if tenant is not None:
+                qs = qs.filter(tenant=tenant)
+            return qs
+
+except ImportError:
+    pass

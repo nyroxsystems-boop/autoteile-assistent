@@ -35,6 +35,8 @@ import InvenTree.tasks
 import order.models
 import report.mixins
 import stock.tasks
+from tenancy.models import TenantScopedModel
+from tenancy.managers import TenantManager, TenantTreeManager
 from common.icons import validate_icon
 from common.settings import get_global_setting
 from company import models as CompanyModels
@@ -100,7 +102,7 @@ class StockLocationType(InvenTree.models.MetadataMixin, models.Model):
     )
 
 
-class StockLocationManager(TreeManager):
+class StockLocationManager(TenantTreeManager):
     """Custom database manager for the StockLocation class.
 
     StockLocation querysets will automatically select related fields for performance.
@@ -411,6 +413,7 @@ class StockItemReportContext(report.mixins.BaseReportContext):
 
 
 class StockItem(
+    TenantScopedModel,
     InvenTree.models.PluginValidationMixin,
     InvenTree.models.InvenTreeAttachmentMixin,
     InvenTree.models.InvenTreeBarcodeMixin,

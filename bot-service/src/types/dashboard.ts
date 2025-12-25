@@ -23,15 +23,19 @@ export type DashboardOrder = {
   language: string | null;
   createdAt: string;
   updatedAt: string;
+  created_at?: string; // Alias for database compatibility
+  updated_at?: string; // Alias for database compatibility
   customerId?: string | null;
   customerPhone?: string | null;
   vehicle: DashboardVehicle | null;
   part: DashboardOrderPart | null;
+  oem_number?: string | null; // Direct OEM number from database
 };
 
 export type DashboardShopOffer = {
   id: string;
   orderId: string;
+  shopName?: string;
   brand: string;
   productName: string;
   oemNumber: string | null;

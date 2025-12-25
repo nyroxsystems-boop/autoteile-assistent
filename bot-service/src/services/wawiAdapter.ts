@@ -3,11 +3,15 @@ import type { Order as LegacyOrder, Message, ShopOffer, Vehicle } from "../types
 export type ConversationStatus =
   | "choose_language"
   | "collect_vehicle"
+  | "confirm_vehicle"
   | "collect_part"
   | "oem_lookup"
   | "show_offers"
   | "await_offer_choice"
   | "await_offer_confirmation"
+  | "collect_delivery_preference"
+  | "collect_address"
+  | "await_pickup_confirmation"
   | "done";
 
 const ACTIVE_CONVERSATION_STATUSES: ConversationStatus[] = [

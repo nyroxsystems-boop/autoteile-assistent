@@ -105,8 +105,7 @@ const request = async <T>(
     requestHeaders.Authorization = auth;
   } else if (isDev) {
     console.warn(
-      `[api] kein ${needsService ? 'Service' : 'User'} Token gesetzt (VITE_${
-        needsService ? 'WAWI_SERVICE_TOKEN' : 'WAWI_API_TOKEN'
+      `[api] kein ${needsService ? 'Service' : 'User'} Token gesetzt (VITE_${needsService ? 'WAWI_SERVICE_TOKEN' : 'WAWI_API_TOKEN'
       })`
     );
   }
@@ -129,6 +128,13 @@ const request = async <T>(
 
   const raw = await response.text();
   const parsed = parseJsonSafe(raw);
+
+  if (response.status === 401 || response.status === 403) {
+    if (isDev) console.error('[api] auth error', { status: response.status, url });
+    // In a real app, we might want to clear local storage and redirect to login
+    // localStorage.removeItem('auth_access_token');
+    // window.location.href = '/auth';
+  }
 
   if (response.ok) {
     if (isDev) console.log('[api] response ok', { method, url, status: response.status, parsed });

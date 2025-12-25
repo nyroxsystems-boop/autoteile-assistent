@@ -40,3 +40,7 @@ bot-service/**/*.jpeg
 InvenTree-master/.venv/
 InvenTree-master/data/
 InvenTree-master/.env
+bot-service/env.production.txt
+bot-service/crm.db
+backups/
+InvenTree-master/src/backend/backups/

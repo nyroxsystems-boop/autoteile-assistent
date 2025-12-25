@@ -9,7 +9,7 @@ const router = Router();
  */
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const orders = await listOrders(50);
+    const orders = await listOrders();
     res.json(orders);
   } catch (error: any) {
     console.error("Error in GET /api/orders:", error);

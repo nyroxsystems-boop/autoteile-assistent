@@ -27,12 +27,31 @@ import { COLLECT_PART_BRAIN_PROMPT } from "../prompts/collectPartBrainPrompt";
 import { fetchWithTimeoutAndRetry } from "../utils/httpClient";
 import { ORCHESTRATOR_PROMPT } from "../prompts/orchestratorPrompt";
 import { generateChatCompletion } from "./openAiService";
-import fs from "fs/promises";
+import * as fs from "fs/promises";
 
 // Lazy accessor so tests can mock `./supabaseService` after this module was loaded.
 function getSupa() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return require("./supabaseService");
+}
+
+/**
+ * Berechnet den Endpreis für den Kunden inkl. Händler-Marge.
+ */
+function calculateEndPrice(buyingPrice: number, margin?: number): number {
+  const m = margin ? (1 + margin / 100) : (Number(process.env.DEALER_MARGIN) || 1.25);
+  return Math.round(buyingPrice * m * 100) / 100;
+}
+
+function calculateEstimatedDeliveryRange(days: number): string {
+  const today = new Date();
+  const min = new Date();
+  min.setDate(today.getDate() + days);
+  const max = new Date();
+  max.setDate(today.getDate() + days + 2);
+
+  const fmt = (d: Date) => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  return `${fmt(min)} - ${fmt(max)}`;
 }
 
 // KI-Client für NLU
@@ -42,7 +61,7 @@ const client = new OpenAI({
 
 async function answerGeneralQuestion(params: {
   userText: string;
-  language: "de" | "en";
+  language: string;
   missingVehicleInfo: string[];
   knownVehicleSummary: string;
 }): Promise<string> {
@@ -60,12 +79,10 @@ async function answerGeneralQuestion(params: {
   }
   const userPrompt =
     (language === "de"
-      ? `Nutzerfrage: "${userText}"\n\nBereits bekannte Fahrzeugdaten: ${knownVehicleSummary}\nNoch fehlende Infos: ${
-          missingVehicleInfo.join(", ") || "keine"
-        }`
-      : `User question: "${userText}"\n\nKnown vehicle data: ${knownVehicleSummary}\nMissing info: ${
-          missingVehicleInfo.join(", ") || "none"
-        }`) + "\n\nBitte beantworte die Frage oben.";
+      ? `Nutzerfrage: "${userText}"\n\nBereits bekannte Fahrzeugdaten: ${knownVehicleSummary}\nNoch fehlende Infos: ${missingVehicleInfo.join(", ") || "keine"
+      }`
+      : `User question: "${userText}"\n\nKnown vehicle data: ${knownVehicleSummary}\nMissing info: ${missingVehicleInfo.join(", ") || "none"
+      }`) + "\n\nBitte beantworte die Frage oben.";
 
   try {
     const response = await client.chat.completions.create({
@@ -88,13 +105,14 @@ async function answerGeneralQuestion(params: {
       ? "Gute Frage! Leider kann ich sie gerade nicht beantworten. Versuch es bitte später erneut."
       : "Good question! I can’t answer it right now, please try again later.";
   }
+}
 
 async function runCollectPartBrain(params: {
   userText: string;
   parsed: ParsedUserMessage;
   order: any;
   orderData: any;
-  language: "de" | "en";
+  language: string;
   lastQuestionType: string | null;
 }): Promise<CollectPartBrainResult> {
   const payload = {
@@ -149,14 +167,14 @@ async function runCollectPartBrain(params: {
 // ------------------------------
 export interface ParsedUserMessage {
   intent:
-    | "greeting"
-    | "send_vehicle_doc"
-    | "request_part"
-    | "describe_symptoms"
-    | "general_question"
-    | "smalltalk"
-    | "other"
-    | "unknown";
+  | "greeting"
+  | "send_vehicle_doc"
+  | "request_part"
+  | "describe_symptoms"
+  | "general_question"
+  | "smalltalk"
+  | "other"
+  | "unknown";
 
   // Fahrzeuginfos
   make?: string | null;
@@ -245,7 +263,7 @@ async function verifyOemWithAi(params: {
   vehicle: any;
   part: string;
   oem: string;
-  language: "de" | "en";
+  language: string;
 }): Promise<boolean> {
   if (!process.env.OPENAI_API_KEY) return true;
   try {
@@ -297,6 +315,14 @@ function detectAbusive(text: string): boolean {
 }
 
 type OrchestratorAction = "ask_slot" | "confirm" | "oem_lookup" | "smalltalk" | "abusive" | "noop";
+
+interface CollectPartBrainResult {
+  replyText: string;
+  nextStatus: ConversationStatus;
+  slotsToAsk: string[];
+  shouldApologize: boolean;
+  detectedFrustration: boolean;
+}
 
 interface OrchestratorResult {
   action: OrchestratorAction;
@@ -430,7 +456,7 @@ function hasSufficientPartInfo(parsed: ParsedUserMessage, orderData: any): { ok:
 /**
  * Baut eine Rückfrage für fehlende Fahrzeug-Felder.
  */
-function buildVehicleFollowUpQuestion(missingFields: string[], lang: "de" | "en"): string | null {
+function buildVehicleFollowUpQuestion(missingFields: string[], lang: string): string | null {
   if (!missingFields || missingFields.length === 0) return null;
 
   const qDe: Record<string, string> = {
@@ -535,7 +561,7 @@ function mergePartInfo(existing: any, parsed: ParsedUserMessage) {
 
 async function runOemLookupAndScraping(
   orderId: string,
-  language: "de" | "en" | null,
+  language: string | null,
   parsed: ParsedUserMessage,
   orderData: any,
   partDescription: string | null,
@@ -681,39 +707,39 @@ async function runOemLookupAndScraping(
           } catch (uErr: any) {
             logger.warn("Failed to persist scrape job id", { orderId, error: uErr?.message ?? uErr });
           }
-      } else {
-        try {
-          if (typeof persistScrapeResult === "function") {
-            await persistScrapeResult(orderId, {
-              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
-              scrapeResult: scrapeResult ?? null
-            });
-          } else if (typeof updateOrderScrapeTask === "function") {
-            await updateOrderScrapeTask(orderId, {
-              scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
-              scrapeResult: scrapeResult ?? null
-            });
+        } else {
+          try {
+            if (typeof persistScrapeResult === "function") {
+              await persistScrapeResult(orderId, {
+                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+                scrapeResult: scrapeResult ?? null
+              });
+            } else if (typeof updateOrderScrapeTask === "function") {
+              await updateOrderScrapeTask(orderId, {
+                scrapeStatus: (scrapeResult && (scrapeResult as any).ok) ? "done" : "unknown",
+                scrapeResult: scrapeResult ?? null
+              });
+            }
+          } catch (uErr: any) {
+            logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
           }
-        } catch (uErr: any) {
-          logger.warn("Failed to persist scrape result", { orderId, error: uErr?.message ?? uErr });
         }
-      }
 
-      const cautionNote =
-        cautious && language === "de"
-          ? " (bitte kurz prüfen)"
-          : cautious && language === "en"
-            ? " (please double-check)"
-            : "";
+        const cautionNote =
+          cautious && language === "de"
+            ? " (bitte kurz prüfen)"
+            : cautious && language === "en"
+              ? " (please double-check)"
+              : "";
 
-      const reply =
-        language === "en"
-          ? `I found a suitable product and am checking offers now.${cautionNote}`
-          : `Ich habe ein passendes Produkt gefunden und prüfe Angebote.${cautionNote}`;
-      return {
-        replyText: reply,
-        nextStatus: "show_offers"
-      };
+        const reply =
+          language === "en"
+            ? `I found a suitable product and am checking offers now.${cautionNote}`
+            : `Ich habe ein passendes Produkt gefunden und prüfe Angebote.${cautionNote}`;
+        return {
+          replyText: reply,
+          nextStatus: "show_offers"
+        };
       } catch (err: any) {
         logger.error("Scrape after OEM failed", { error: err?.message, orderId });
         return {
@@ -1071,10 +1097,10 @@ export async function parseUserMessage(text: string): Promise<ParsedUserMessage>
 
     const intent =
       raw.intent === "greeting" ||
-      raw.intent === "send_vehicle_doc" ||
-      raw.intent === "request_part" ||
-      raw.intent === "describe_symptoms" ||
-      raw.intent === "other"
+        raw.intent === "send_vehicle_doc" ||
+        raw.intent === "request_part" ||
+        raw.intent === "describe_symptoms" ||
+        raw.intent === "other"
         ? raw.intent
         : "unknown";
 
@@ -1158,10 +1184,13 @@ async function withConversationLock<T>(key: string, fn: () => Promise<T>): Promi
 }
 
 // Helper: detect explicit language choice in the language selection step
-function pickLanguageFromChoice(text: string): "de" | "en" | null {
+function pickLanguageFromChoice(text: string): string | null {
   const t = text.toLowerCase();
   if (t.includes("1") || t.includes("deutsch")) return "de";
   if (t.includes("2") || t.includes("english")) return "en";
+  if (t.includes("3") || t.includes("türk")) return "tr";
+  if (t.includes("4") || t.includes("kurdi")) return "ku";
+  if (t.includes("5") || t.includes("polsk")) return "pl";
   return null;
 }
 
@@ -1193,26 +1222,15 @@ function sanitizeText(input: string, maxLen = 500): string {
   return trimmed.replace(/[\u0000-\u001F\u007F]/g, " ");
 }
 
-type MessageIntent = "new_order" | "order_question" | "unknown";
+type MessageIntent = "new_order" | "status_question" | "unknown";
 function detectIntent(text: string, hasVehicleImage: boolean): MessageIntent {
   if (hasVehicleImage) return "new_order";
   const t = text.toLowerCase();
-  const questionKeywords = [
-    "liefer",
-    "zustellung",
-    "wann",
-    "abholung",
-    "abholen",
-    "zahlen",
-    "zahlung",
-    "vorkasse",
-    "status",
-    "wo bleibt",
-    "retoure",
-    "liefertermin",
-    "tracking"
+  const statusKeywords = [
+    "liefer", "zustellung", "wann", "abholung", "abholen", "zahlen", "zahlung",
+    "vorkasse", "status", "wo bleibt", "retoure", "liefertermin", "tracking", "order", "bestellung"
   ];
-  if (questionKeywords.some((k) => t.includes(k))) return "order_question";
+  if (statusKeywords.some((k) => t.includes(k))) return "status_question";
   return "unknown";
 }
 
@@ -1227,14 +1245,21 @@ function shortOrderLabel(o: { id: string; vehicle_description?: string | null; p
 // ------------------------------
 export async function handleIncomingBotMessage(
   payload: BotMessagePayload
-): Promise<{ reply: string; orderId: string }> {
+): Promise<{
+  reply: string;
+  orderId: string;
+  mediaUrl?: string;
+  buttons?: string[];
+  contentSid?: string;
+  contentVariables?: string;
+}> {
   return withConversationLock(payload.from, async () => {
-  const userText = sanitizeText(payload.text || "", 1000);
-  const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
-  const vehicleImageNote =
-    hasVehicleImage && payload.mediaUrls
-      ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
-      : null;
+    const userText = sanitizeText(payload.text || "", 1000);
+    const hasVehicleImage = Array.isArray(payload.mediaUrls) && payload.mediaUrls.length > 0;
+    const vehicleImageNote =
+      hasVehicleImage && payload.mediaUrls
+        ? payload.mediaUrls.map((url, idx) => `[REGISTRATION_IMAGE_${idx + 1}]: ${url}`).join("\n")
+        : null;
 
     // Intent + mögliche offene Orders vor dem Erstellen ermitteln
     const intent: MessageIntent = detectIntent(userText, hasVehicleImage);
@@ -1250,7 +1275,7 @@ export async function handleIncomingBotMessage(
     }
 
     // Falls Frage und mehrere offene Tickets → Auswahl erfragen
-    if (intent === "order_question" && activeOrders.length > 1 && !payload.orderId) {
+    if (intent === "status_question" && activeOrders.length > 1 && !payload.orderId) {
       const options = activeOrders.slice(0, 3).map(shortOrderLabel).join(" | ");
       return {
         reply:
@@ -1272,13 +1297,12 @@ export async function handleIncomingBotMessage(
 
     // Order laden oder erstellen
     const order = await getSupa().findOrCreateOrder(payload.from, orderForFlowId ?? null, { forceNew: forceNewOrder });
-    logger.info("BotFlow start", {
-      from: payload.from,
-      orderId: order.id,
-      text: userText,
-      status: order.status
-    });
-    let language: "de" | "en" | null = order.language ?? null;
+    // Load Merchant Settings
+    const merchantId = process.env.MERCHANT_ID || "merchant-1";
+    const merchantSettings = await getSupa().getMerchantSettings(merchantId);
+    const supportedLangs = merchantSettings?.supportedLanguages || ["de", "en"];
+
+    let language: string | null = order.language ?? null;
     let languageChanged = false;
 
     // Only accept explicit language choice (1 / 2 / de / en). Do NOT auto-persist language based on free text
@@ -1310,15 +1334,9 @@ export async function handleIncomingBotMessage(
 
     // Nachricht loggen (best effort)
     try {
-      await insertMessage({
-        orderId: order.id,
-        direction: "incoming",
-        channel: "whatsapp",
-        fromIdentifier: payload.from,
-        toIdentifier: null,
-        content: userText,
-        rawPayload: { from: payload.from, mediaUrls: payload.mediaUrls || [] }
-      });
+      // Compatibility adjustment for InvenTreeAdapter which expects (waId, content, direction)
+      const msgDir = "IN";
+      await (insertMessage as any)(payload.from, userText, msgDir);
     } catch (err: any) {
       logger.error("Failed to log incoming message", { error: err?.message, orderId: order.id });
     }
@@ -1354,56 +1372,70 @@ export async function handleIncomingBotMessage(
 
     // Call AI orchestrator as primary decision maker. If it fails, fallback to legacy NLU.
     let parsed: ParsedUserMessage = { intent: "unknown" };
-    try {
-      const orchestratorPayload = {
-        sender: payload.from,
-        orderId: order.id,
-        conversation: {
-          status: order.status,
-          language: order.language,
-          orderData: orderData,
-          lastBotMessage: null
-        },
-        latestMessage: userText,
-        ocr: ocrResult
-      };
+    const statesForOrchestrator: ConversationStatus[] = ["choose_language", "collect_vehicle", "collect_part"];
+    if (statesForOrchestrator.includes(order.status as any)) {
+      try {
+        const orchestratorPayload = {
+          sender: payload.from,
+          orderId: order.id,
+          conversation: {
+            status: order.status,
+            language: order.language,
+            orderData: orderData,
+            lastBotMessage: null
+          },
+          latestMessage: userText,
+          ocr: ocrResult
+        };
 
-      const orch = await callOrchestrator(orchestratorPayload);
-      if (orch) {
-        // Handle simple orchestrator actions directly
-        if (orch.action === "abusive") {
-          const reply = orch.reply || (order.language === "de" ? "Bitte benutze keine Beleidigungen." : "Please refrain from insults.");
-          return { reply, orderId: order.id };
-        }
-
-        if (orch.action === "smalltalk") {
-          // do not change state, just reply
-          let reply = orch.reply || "";
-          if (needsVehicleDocumentHint(order)) {
-            const docHint =
-              order.language === "en"
-                ? "Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Falls nicht möglich: Marke, Modell, Baujahr und VIN oder HSN/TSN."
-                : "Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Falls nicht möglich: Marke, Modell, Baujahr und VIN oder HSN/TSN.";
-            reply = reply ? `${reply} ${docHint}` : docHint;
+        const orch = await callOrchestrator(orchestratorPayload);
+        if (orch) {
+          // Handle simple orchestrator actions directly
+          if (orch.action === "abusive") {
+            const reply = orch.reply || (order.language === "de" ? "Bitte benutze keine Beleidigungen." : "Please refrain from insults.");
+            return { reply, orderId: order.id };
           }
-          return { reply, orderId: order.id };
-        }
 
-        // Merge offered slots into order_data
-        const slotsToStore: Record<string, any> = {};
-        for (const [k, v] of Object.entries(orch.slots || {})) {
-          if (v !== undefined && v !== null && v !== "") slotsToStore[k] = v;
-        }
-        if (Object.keys(slotsToStore).length > 0) {
-          try {
-            await updateOrderData(order.id, slotsToStore);
-            orderData = { ...orderData, ...slotsToStore };
-          } catch (err: any) {
-            logger.warn("Failed to persist orchestrator slots", { error: err?.message, orderId: order.id });
+          if (orch.action === "smalltalk") {
+            // do not change state, just reply
+            let reply = orch.reply || "";
+            if (needsVehicleDocumentHint(order)) {
+              const docHint =
+                order.language === "en"
+                  ? "The best way is to send me a photo of your vehicle registration document. Alternatively: brand, model, year and VIN or HSN/TSN."
+                  : "Schick mir am besten zuerst ein Foto deines Fahrzeugscheins. Falls nicht möglich: Marke, Modell, Baujahr und VIN oder HSN/TSN.";
+              reply = reply ? `${reply} ${docHint}` : docHint;
+            }
+            return { reply, orderId: order.id };
           }
-        }
 
-        if (orch.action === "ask_slot") {
+          // Merge offered slots into order_data
+          const slotsToStore: Record<string, any> = {};
+          for (const [k, v] of Object.entries(orch.slots || {})) {
+            if (v !== undefined && v !== null && v !== "") slotsToStore[k] = v;
+          }
+          if (Object.keys(slotsToStore).length > 0) {
+            try {
+              await updateOrderData(order.id, slotsToStore);
+              orderData = { ...orderData, ...slotsToStore };
+              // Also sync vehicle record if vehicle slots are present
+              if (slotsToStore.make || slotsToStore.model || slotsToStore.vin || slotsToStore.hsn) {
+                await getSupa().upsertVehicleForOrderFromPartial(order.id, {
+                  make: slotsToStore.make ?? null,
+                  model: slotsToStore.model ?? null,
+                  year: slotsToStore.year ? Number(slotsToStore.year) : null,
+                  vin: slotsToStore.vin ?? null,
+                  hsn: slotsToStore.hsn ?? null,
+                  tsn: slotsToStore.tsn ?? null,
+                  engine: slotsToStore.engine ?? slotsToStore.engineCode ?? null,
+                  engineKw: slotsToStore.engineKw ? Number(slotsToStore.engineKw) : null
+                });
+              }
+            } catch (err: any) {
+              logger.warn("Failed to persist orchestrator slots", { error: err?.message, orderId: order.id });
+            }
+          }
+
           const vehicleCandidate = {
             make: orch.slots.make ?? ocrResult?.make ?? orderData?.make ?? null,
             model: orch.slots.model ?? ocrResult?.model ?? orderData?.model ?? null,
@@ -1422,83 +1454,98 @@ export async function handleIncomingBotMessage(
             orderData?.partText ??
             (userText && userText.length > 0 ? userText : null);
 
-          if (isVehicleSufficientForOem(vehicleCandidate) && partCandidate) {
+          if (statesForOrchestrator.includes(order.status as any) && isVehicleSufficientForOem(vehicleCandidate) && partCandidate) {
+            if (!orderData?.vehicleConfirmed) {
+              const summary = `${vehicleCandidate.make} ${vehicleCandidate.model} (${vehicleCandidate.year})`;
+              const reply = language === "en"
+                ? `I've identified your vehicle as ${summary}. Is this correct?`
+                : `Ich habe dein Fahrzeug als ${summary} identifiziert. Ist das korrekt?`;
+              await updateOrder(order.id, { status: "confirm_vehicle" });
+              return { reply, orderId: order.id, nextStatus: "confirm_vehicle" };
+            }
+          }
+
+          if (orch.action === "ask_slot") {
+            if (isVehicleSufficientForOem(vehicleCandidate) && partCandidate) {
+              const oemFlow = await runOemLookupAndScraping(
+                order.id,
+                language ?? "de",
+                {
+                  intent: "request_part",
+                  normalizedPartName: partCandidate,
+                  userPartText: partCandidate,
+                  isAutoPart: true
+                } as ParsedUserMessage,
+                orderData,
+                partCandidate,
+                vehicleCandidate
+              );
+              return { reply: oemFlow.replyText, orderId: order.id };
+            }
+
+            return { reply: orch.reply || "", orderId: order.id };
+          }
+
+          if (orch.action === "oem_lookup") {
+            // build parsed minimal object and vehicleOverride
+            const vehicleOverride = {
+              make: orch.slots.make ?? orch.slots.brand ?? undefined,
+              model: orch.slots.model ?? undefined,
+              year: orch.slots.year ?? undefined,
+              engine: orch.slots.engine ?? undefined,
+              vin: orch.slots.vin ?? undefined,
+              hsn: orch.slots.hsn ?? undefined,
+              tsn: orch.slots.tsn ?? undefined
+            };
+
+            const minimalParsed: ParsedUserMessage = {
+              intent: "request_part",
+              normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
+              userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
+              isAutoPart: true,
+              partCategory: orch.slots.partCategory ?? null,
+              position: orch.slots.position ?? null,
+              positionNeeded: Boolean(orch.slots.position)
+            };
+
             const oemFlow = await runOemLookupAndScraping(
               order.id,
-              language ?? "de",
-              {
-                intent: "request_part",
-                normalizedPartName: partCandidate,
-                userPartText: partCandidate,
-                isAutoPart: true
-              } as ParsedUserMessage,
+              order.language ?? "de",
+              minimalParsed,
               orderData,
-              partCandidate,
-              vehicleCandidate
+              orch.slots.requestedPart ?? null,
+              vehicleOverride
             );
+
             return { reply: oemFlow.replyText, orderId: order.id };
           }
 
-          return { reply: orch.reply || "", orderId: order.id };
+          // orch.action === confirm / noop => set parsed from slots and continue legacy flow
+          if (orch.slots && Object.keys(orch.slots).length > 0) {
+            parsed = {
+              intent: "request_part",
+              normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
+              userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
+              isAutoPart: true,
+              partCategory: orch.slots.partCategory ?? null,
+              position: orch.slots.position ?? null,
+              positionNeeded: Boolean(orch.slots.position)
+            } as ParsedUserMessage;
+          }
         }
-
-        if (orch.action === "oem_lookup") {
-          // build parsed minimal object and vehicleOverride
-          const vehicleOverride = {
-            make: orch.slots.make ?? orch.slots.brand ?? undefined,
-            model: orch.slots.model ?? undefined,
-            year: orch.slots.year ?? undefined,
-            engine: orch.slots.engine ?? undefined,
-            vin: orch.slots.vin ?? undefined,
-            hsn: orch.slots.hsn ?? undefined,
-            tsn: orch.slots.tsn ?? undefined
-          };
-
-          const minimalParsed: ParsedUserMessage = {
-            intent: "request_part",
-            normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
-            userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
-            isAutoPart: true,
-            partCategory: orch.slots.partCategory ?? null,
-            position: orch.slots.position ?? null,
-            positionNeeded: Boolean(orch.slots.position)
-          };
-
-          const oemFlow = await runOemLookupAndScraping(
-            order.id,
-            order.language ?? "de",
-            minimalParsed,
-            orderData,
-            orch.slots.requestedPart ?? null,
-            vehicleOverride
-          );
-
-          return { reply: oemFlow.replyText, orderId: order.id };
+      } catch (err: any) {
+        logger.error("Orchestrator flow failed, falling back to legacy NLU", { error: err?.message });
+        try {
+          parsed = await parseUserMessage(userText);
+        } catch (err2: any) {
+          logger.error("parseUserMessage failed in fallback", { error: err2?.message });
         }
-
-        // orch.action === confirm / noop => set parsed from slots and continue legacy flow
-        if (orch.slots && Object.keys(orch.slots).length > 0) {
-          parsed = {
-            intent: "request_part",
-            normalizedPartName: orch.slots.requestedPart ?? orch.slots.part ?? null,
-            userPartText: orch.slots.requestedPart ?? orch.slots.part ?? null,
-            isAutoPart: true,
-            partCategory: orch.slots.partCategory ?? null,
-            position: orch.slots.position ?? null,
-            positionNeeded: Boolean(orch.slots.position)
-          } as ParsedUserMessage;
-        }
-      } else {
-        // fallback to legacy parse if orchestrator not available
-        parsed = await parseUserMessage(userText);
       }
-    } catch (err: any) {
-      logger.error("Orchestrator flow failed, falling back to legacy NLU", { error: err?.message });
+    } else {
+      // For confirm_vehicle and other non-orchestrated states, use simple legacy parsing
       try {
         parsed = await parseUserMessage(userText);
-      } catch (err2: any) {
-        logger.error("parseUserMessage failed in fallback", { error: err2?.message });
-      }
+      } catch (e) { }
     }
 
     // requestedPart aus Usertext merken und persistieren
@@ -1513,11 +1560,32 @@ export async function handleIncomingBotMessage(
       partDescription = partDescription ? `${partDescription}\n${requestedPart}` : requestedPart;
     }
 
+    // Status-Fragen (Lieferung, Wo bleibt mein Paket?)
+    if (intent === "status_question") {
+      const status = order.status;
+      const odata = order.order_data || {};
+      const delivery = odata.selectedOfferSummary?.deliveryTimeDays ?? "n/a";
+
+      let statusReply = "";
+      if (language === "en") {
+        statusReply = `I've checked your order ${order.id}. Current status: ${status}. `;
+        if (status === "done") statusReply += "It should be on its way or ready for pickup!";
+        else if (status === "ready") statusReply += `It is currently being processed. Estimated delivery: ${delivery} days.`;
+        else statusReply += "We are currently looking for the best price for you.";
+      } else {
+        statusReply = `Ich habe nachgesehen (Ticket ${order.id}). Status: ${status}. `;
+        if (status === "done") statusReply += "Deine Bestellung ist abgeschlossen und sollte bald bei dir sein!";
+        else if (status === "ready") statusReply += `Wir bearbeiten deine Bestellung. Geschätzte Lieferzeit: ${delivery} Tage.`;
+        else statusReply += "Wir suchen gerade noch nach dem besten Angebot für dich.";
+      }
+      return { reply: statusReply, orderId: order.id };
+    }
+
     // Allgemeine Fragen (General QA)
     if (parsed.intent === "general_question") {
       const currentVehicle = await getVehicleForOrder(order.id);
       const knownVehicleSummary = JSON.stringify(currentVehicle ?? {});
-      const lang = language ?? detectLanguageFromText(userText) ?? "de";
+      const lang = language ?? "de";
       const reply = await answerGeneralQuestion({
         userText,
         language: lang,
@@ -1537,16 +1605,13 @@ export async function handleIncomingBotMessage(
     switch (nextStatus) {
       case "choose_language": {
         // Wenn bereits Sprache gesetzt ist, nicht erneut fragen
-        if (language) {
+        if (language && supportedLangs.includes(language)) {
           nextStatus = "collect_vehicle";
-          replyText =
-            language === "en"
-              ? "Hello and welcome! Please send a photo of your registration document, or tell me VIN/HSN/TSN, or at least make/model/year."
-              : "Hallo und willkommen! Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
+          // We will generate the greeting below
           break;
         }
 
-  const chosen = pickLanguageFromChoice(userText); // require explicit choice
+        const chosen = pickLanguageFromChoice(userText); // require explicit choice
         if (chosen) {
           language = chosen;
           languageChanged = true;
@@ -1556,13 +1621,16 @@ export async function handleIncomingBotMessage(
             logger.error("Failed to persist chosen language", { error: err?.message, orderId: order.id });
           }
           nextStatus = "collect_vehicle";
-          replyText =
-            language === "en"
-              ? "Hello and welcome! Please send a photo of your registration document, or tell me VIN/HSN/TSN, or at least make/model/year."
-              : "Hallo und willkommen! Bitte sende ein Foto deines Fahrzeugscheins oder nenne VIN/HSN/TSN oder mindestens Marke/Modell/Baujahr.";
+          // We will generate the reply below
         } else {
           replyText =
-            "Hallo und willkommen! Bitte wähle 1 für Deutsch oder 2 for English.\nHello and welcome! Please choose 1 for German or 2 for English.";
+            "Hallo! Bitte wähle deine Sprache:\n" +
+            "1. Deutsch 🇩🇪\n" +
+            "2. English 🇬🇧\n" +
+            "3. Türkçe 🇹🇷\n" +
+            "4. Kurdî ☀️\n" +
+            "5. Polski 🇵🇱\n\n" +
+            "Antworte einfach mit der Nummer (1, 2, 3, 4 oder 5).";
         }
         break;
       }
@@ -1814,11 +1882,51 @@ export async function handleIncomingBotMessage(
               : "Bitte nenne mir VIN oder HSN/TSN oder mindestens Marke/Modell/Baujahr, damit ich dein Auto identifizieren kann.");
           nextStatus = "collect_vehicle";
         } else {
-          nextStatus = "collect_part";
-          replyText =
-            language === "en"
-              ? "Thanks, I have enough vehicle info. Which part do you need? Please include position (front/rear, left/right) and any symptoms."
-              : "Danke, ich habe genug Fahrzeugdaten. Welches Teil brauchst du? Bitte Position (vorne/hinten, links/rechts) und Symptome nennen.";
+          const summary = `${vehicle?.make} ${vehicle?.model} (${vehicle?.year})`;
+          replyText = language === "en"
+            ? `I've identified your vehicle as ${summary}. Is this correct?`
+            : `Ich habe dein Fahrzeug als ${summary} identifiziert. Ist das korrekt?`;
+          nextStatus = "confirm_vehicle";
+        }
+        break;
+      }
+
+      case "confirm_vehicle": {
+        const isYes = userText.toLowerCase().match(/^(ja|yes|jo|jup|correct|korrekt|stimmt|y)$/);
+        if (isYes) {
+          try {
+            await updateOrderData(order.id, { vehicleConfirmed: true });
+            orderData = { ...orderData, vehicleConfirmed: true };
+          } catch (err) {
+            logger.error("Failed to store vehicle confirmation", { orderId: order.id });
+          }
+
+          const partName = orderData?.requestedPart || orderData?.partText;
+          if (partName) {
+            const vehicleForBrain = await getVehicleForOrder(order.id);
+            const oemFlow = await runOemLookupAndScraping(
+              order.id,
+              language ?? "de",
+              { intent: "request_part", normalizedPartName: partName, userPartText: partName } as any,
+              orderData,
+              partName,
+              vehicleForBrain
+            );
+            replyText = oemFlow.replyText;
+            nextStatus = oemFlow.nextStatus;
+          } else {
+            replyText = language === "en"
+              ? "Great! Which part do you need? Please include position and symptoms."
+              : "Super! Welches Teil brauchst du? Bitte nenne mir auch die Position und eventuelle Symptome.";
+            nextStatus = "collect_part";
+          }
+        } else {
+          // User says no or provided different info
+          replyText = language === "en"
+            ? "Oh, I'm sorry. Please send me a photo of your registration or the correct VIN so I can identify the right car."
+            : "Oh, das tut mir leid. Bitte schick mir ein Foto vom Fahrzeugschein oder die korrekte VIN, damit ich das richtige Auto finde.";
+          nextStatus = "collect_vehicle";
+          // Option: Clear vehicle data? User might just want to correct it.
         }
         break;
       }
@@ -1832,8 +1940,8 @@ export async function handleIncomingBotMessage(
           partText: orderData?.partText ?? null
         };
 
-      const mergedPartInfo = mergePartInfo(existingPartInfo, parsed);
-      partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
+        const mergedPartInfo = mergePartInfo(existingPartInfo, parsed);
+        partDescription = partDescription ? `${partDescription}\n${userText}` : userText;
 
         // persistierte order_data aktualisieren
         try {
@@ -1855,7 +1963,7 @@ export async function handleIncomingBotMessage(
           parsed,
           order,
           orderData: { ...orderData, vehicle: vehicleForBrain ?? undefined },
-          language: (language ?? "de") as "de" | "en",
+          language: language ?? "de",
           lastQuestionType: orderData?.lastQuestionType ?? null
         });
 
@@ -1938,12 +2046,36 @@ export async function handleIncomingBotMessage(
           }
 
           if (sorted.length === 1) {
-            const offer = sorted[0];
+            const offer = sorted[0] as any;
+            const endPrice = calculateEndPrice(offer.price);
             const delivery = offer.deliveryTimeDays ?? (language === "en" ? "n/a" : "k.A.");
+
+            const bindingNote = language === "en"
+              ? "\n\n⚠️ NOTE: This offer is a binding purchase agreement."
+              : "\n\n⚠️ HINWEIS: Mit deiner Bestätigung gibst du ein verbindliches Kaufangebot bei deinem Händler ab.";
+
+            // Beautiful offer formatting for WhatsApp (NO LINK, NO SHOP NAME for customer)
+            const isInStock = offer.shopName === "Händler-Lager" || offer.shopName === "Eigener Bestand";
+            const stockInfo = isInStock
+              ? (language === "en" ? "📦 *Available for immediate pickup!*" : "📦 *Sofort abholbereit!*")
+              : (language === "en" ? `🚚 *Delivery:* ${delivery} days` : `🚚 *Lieferzeit:* ${delivery} Tage`);
+
             replyText =
               language === "en"
-                ? `I’ve found a suitable offer:\n\nBrand: ${offer.brand ?? "n/a"}\nShop: ${offer.shopName}\nPrice: ${offer.price} ${offer.currency}\nDelivery time: ${delivery} days.\n\nIf this works for you, please reply with "Yes" or "OK".`
-                : `Ich habe ein passendes Angebot gefunden:\n\nMarke: ${offer.brand ?? "unbekannt"}\nShop: ${offer.shopName}\nPreis: ${offer.price} ${offer.currency}\nLieferzeit: ${delivery} Tage.\n\nWenn das für dich passt, antworte bitte mit "Ja" oder "OK".`;
+                ? `✅ *Perfect Match Found!*\n\n` +
+                `🏷️ *Brand:* ${offer.brand ?? "n/a"}\n` +
+                `💰 *Price:* ${endPrice} ${offer.currency}\n` +
+                `${stockInfo}\n` +
+                `${offer.availability && !isInStock ? `📦 *Stock:* ${offer.availability}\n` : ''}` +
+                `${bindingNote}\n\n` +
+                `Do you want to order this now?`
+                : `✅ *Perfektes Angebot gefunden!*\n\n` +
+                `🏷️ *Marke:* ${offer.brand ?? "unbekannt"}\n` +
+                `💰 *Preis:* ${endPrice} ${offer.currency}\n` +
+                `${stockInfo}\n` +
+                `${offer.availability && !isInStock ? `📦 *Verfügbarkeit:* ${offer.availability}\n` : ''}` +
+                `${bindingNote}\n\n` +
+                `Jetzt verbindlich bestellen?`;
 
             try {
               await updateOrderData(order.id, {
@@ -1954,40 +2086,49 @@ export async function handleIncomingBotMessage(
               logger.error("Failed to store selectedOfferCandidateId", { error: err?.message, orderId: order.id });
             }
 
-            logger.info("Offer options sent to user", {
-              orderId: order.id,
-              optionIds: [offer.id],
-              optionShops: [offer.shopName],
-              nextStatus: "await_offer_confirmation"
-            });
             nextStatus = "await_offer_confirmation";
-            break;
+            return {
+              reply: replyText,
+              orderId: order.id,
+              mediaUrl: offer.imageUrl ?? undefined, // Product image for customer
+              buttons: language === "en" ? ["Yes, order now", "No, show others"] : ["Ja, jetzt bestellen", "Nein, andere suchen"]
+            };
           }
 
           const top = sorted.slice(0, 3);
           const lines =
             language === "en"
               ? top.map(
-                  (o: any, idx: number) =>
-                    `${idx + 1}) ${o.brand ?? "n/a"} at ${o.shopName}, ${o.price} ${o.currency}, delivery about ${
-                      o.deliveryTimeDays ?? "n/a"
-                    } days`
-                )
+                (o: any, idx: number) => {
+                  const isInStock = o.shopName === "Händler-Lager" || o.shopName === "Eigener Bestand";
+                  const deliveryInfo = isInStock ? "📦 Sofort" : `🚚 ${o.deliveryTimeDays ?? "n/a"} days`;
+                  return `*${idx + 1}.* 🏷️ ${o.brand ?? "n/a"}\n` +
+                    `   💰 ${calculateEndPrice(o.price)} ${o.currency} | ${deliveryInfo}`;
+                }
+              )
               : top.map(
-                  (o: any, idx: number) =>
-                    `${idx + 1}) ${o.brand ?? "k.A."} bei ${o.shopName}, ${o.price} ${o.currency}, Lieferung ca. ${
-                      o.deliveryTimeDays ?? "k.A."
-                    } Tage`
-                );
+                (o: any, idx: number) => {
+                  const isInStock = o.shopName === "Händler-Lager" || o.shopName === "Eigener Bestand";
+                  const deliveryInfo = isInStock ? "📦 Sofort" : `🚚 ${o.deliveryTimeDays ?? "k.A."} Tage`;
+                  return `*${idx + 1}.* 🏷️ ${o.brand ?? "k.A."}\n` +
+                    `   💰 ${calculateEndPrice(o.price)} ${o.currency} | ${deliveryInfo}`;
+                }
+              );
+
+          const multiBindingNote = language === "en"
+            ? "\n\n⚠️ Selecting an option constitutes a binding purchase agreement."
+            : "\n\n⚠️ Die Auswahl einer Option gilt als verbindliches Kaufangebot.";
 
           replyText =
             language === "en"
-              ? "I found some offers. Please choose one:\n\n" +
-                lines.join("\n") +
-                "\n\nReply with 1, 2 or 3."
-              : "Ich habe passende Angebote gefunden. Bitte wähle eines:\n\n" +
-                lines.join("\n") +
-                "\n\nAntworte einfach mit 1, 2 oder 3.";
+              ? "✅ *I found multiple offers!*\n\nPlease choose one:\n\n" +
+              lines.join("\n\n") +
+              multiBindingNote +
+              "\n\n👉 Reply with *1*, *2* or *3*."
+              : "✅ *Ich habe mehrere Angebote gefunden!*\n\nBitte wähle eines:\n\n" +
+              lines.join("\n\n") +
+              multiBindingNote +
+              "\n\n👉 Antworte mit *1*, *2* oder *3*.";
 
           try {
             await updateOrderData(order.id, {
@@ -1998,13 +2139,12 @@ export async function handleIncomingBotMessage(
             logger.error("Failed to store offerChoiceIds", { error: err?.message, orderId: order.id });
           }
 
-          logger.info("Offer options sent to user", {
-            orderId: order.id,
-            optionIds: top.map((o: any) => o.id),
-            optionShops: top.map((o: any) => o.shopName),
-            nextStatus: "await_offer_choice"
-          });
           nextStatus = "await_offer_choice";
+          return {
+            reply: replyText,
+            orderId: order.id,
+            mediaUrl: top[0]?.imageUrl ?? undefined
+          };
         } catch (err: any) {
           logger.error("Fetching offers failed", { error: err?.message, orderId: order.id });
           replyText =
@@ -2012,6 +2152,7 @@ export async function handleIncomingBotMessage(
               ? "I couldn't retrieve offers right now. I'll update you soon."
               : "Ich konnte gerade keine Angebote abrufen. Ich melde mich bald erneut.";
           nextStatus = "show_offers";
+          return { reply: replyText, orderId: order.id };
         }
         break;
       }
@@ -2052,7 +2193,7 @@ export async function handleIncomingBotMessage(
             selectedOfferSummary: {
               shopName: chosen.shopName,
               brand: chosen.brand,
-              price: chosen.price,
+              price: calculateEndPrice(chosen.price),
               currency: chosen.currency,
               deliveryTimeDays: chosen.deliveryTimeDays
             }
@@ -2071,8 +2212,8 @@ export async function handleIncomingBotMessage(
         });
         replyText =
           language === "en"
-            ? `Thank you! Your order (${order.id}) has been saved with the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${chosen.price} ${chosen.currency}). Your dealer can now see this in the system.`
-            : `Vielen Dank! Deine Bestellung (${order.id}) wurde mit dem Angebot von ${chosen.shopName} (${chosen.brand ?? "k.A."}, ${chosen.price} ${chosen.currency}) gespeichert. Dein Händler sieht diese Auswahl jetzt im System.`;
+            ? `Thank you! Your order (${order.id}) has been saved with the offer from ${chosen.shopName} (${chosen.brand ?? "n/a"}, ${calculateEndPrice(chosen.price)} ${chosen.currency}). This is now a binding agreement. Your dealer will contact you soon.`
+            : `Vielen Dank! Deine Bestellung (${order.id}) wurde mit dem Angebot von ${chosen.shopName} (${chosen.brand ?? "k.A."}, ${calculateEndPrice(chosen.price)} ${chosen.currency}) gespeichert. Dies ist nun eine verbindliche Bestellung. Dein Händler wird dich bald kontaktieren.`;
         nextStatus = "done";
         break;
       }
@@ -2134,12 +2275,25 @@ export async function handleIncomingBotMessage(
             selectedOfferSummary: {
               shopName: chosen.shopName,
               brand: chosen.brand,
-              price: chosen.price,
+              price: calculateEndPrice(chosen.price, merchantSettings?.marginPercent),
               currency: chosen.currency,
               deliveryTimeDays: chosen.deliveryTimeDays
             }
           });
           await updateOrderStatus(order.id, "ready");
+
+          if (merchantSettings?.allowDirectDelivery) {
+            replyText = language === "en"
+              ? "Great! Do you want the part delivered to your home (D) or do you want to pick it up at the dealer (P)?"
+              : "Super! Möchtest du das Teil nach Hause geliefert bekommen (D) oder holst du es beim Händler ab (P)?";
+            nextStatus = "collect_delivery_preference";
+          } else {
+            const dealerLoc = merchantSettings?.dealerAddress || "unseren Standort";
+            replyText = language === "en"
+              ? `Perfect! I've reserved the part. You can pick it up at: ${dealerLoc}.`
+              : `Perfekt! Ich habe das Teil reserviert. Du kannst es hier abholen: ${dealerLoc}.`;
+            nextStatus = "done";
+          }
         } catch (err: any) {
           logger.error("Failed to store confirmed offer", { error: err?.message, orderId: order.id, candidateId });
         }
@@ -2151,8 +2305,8 @@ export async function handleIncomingBotMessage(
         });
         replyText =
           language === "en"
-            ? `Perfect, I’ve saved this offer for you as order ${order.id}. Your dealer can now see that you selected this product.`
-            : `Perfekt, ich habe dieses Angebot für dich als Bestellung ${order.id} gespeichert. Dein Händler sieht jetzt, dass du dieses Produkt ausgewählt hast.`;
+            ? `Perfect, I’ve saved this offer for you. Your order (${order.id}) is now binding. Your dealer will contact you soon.`
+            : `Perfekt, ich habe dieses Angebot für dich gespeichert. Deine Bestellung (${order.id}) ist nun verbindlich. Dein Händler wird dich bald kontaktieren.`;
         nextStatus = "done";
         break;
       }
@@ -2167,12 +2321,67 @@ export async function handleIncomingBotMessage(
         break;
       }
 
+      case "collect_delivery_preference": {
+        const choice = userText.toLowerCase();
+        if (choice.includes("d") || choice.includes("liefer")) {
+          replyText = language === "en"
+            ? "Excellent choice. Please send me your full delivery address."
+            : "Sehr gute Wahl. Bitte sende mir nun deine vollständige Lieferadresse.";
+          nextStatus = "collect_address";
+        } else if (choice.includes("p") || choice.includes("abhol")) {
+          const dealerLoc = merchantSettings?.dealerAddress || "unseren Standort";
+          replyText = language === "en"
+            ? `Perfect! You can pick up the part at: ${dealerLoc}. See you soon!`
+            : `Perfekt! Du kannst das Teil hier abholen: ${dealerLoc}. Bis bald!`;
+          nextStatus = "done";
+        } else {
+          replyText = language === "en"
+            ? "Please decide: Delivery (D) or Pickup (P)?"
+            : "Bitte entscheide dich: Lieferung (D) oder Abholung (P)?";
+        }
+        break;
+      }
+
+      case "collect_address": {
+        if (userText.length > 10) {
+          try {
+            await getSupa().saveDeliveryAddress(order.id, userText);
+          } catch (err) {
+            logger.error("Failed to save delivery address", { orderId: order.id, error: err });
+          }
+          replyText = language === "en"
+            ? "Thank you! Your delivery address has been saved. We will ship the part shortly."
+            : "Vielen Dank! Deine Lieferadresse wurde gespeichert. Wir versenden das Teil in Kürze.";
+          nextStatus = "done";
+        } else {
+          replyText = language === "en"
+            ? "Please provide a valid delivery address."
+            : "Bitte gib eine gültige Lieferadresse an.";
+        }
+        break;
+      }
+
+      case "done": {
+        // Fallback for when the user keeps writing after completion
+        replyText = language === "en"
+          ? "Your order is complete. If you have further questions, just ask!"
+          : "Deine Bestellung ist abgeschlossen. Wenn du weitere Fragen hast, frag einfach!";
+
+        // Premium: Use Content API for success message if we have a SID
+        return {
+          reply: replyText,
+          orderId: order.id,
+          contentSid: 'HXb5b62575e6e4ff6129ad7c8efe1f983e', // Example Provided by User
+          contentVariables: JSON.stringify({ "1": order.id, "2": "Bestellung abgeschlossen" })
+        };
+      }
+
       default: {
         // Unerwarteter Zustand: sauber neustarten
         nextStatus = "choose_language";
         language = null;
         replyText =
-          "Es ist ein interner Fehler im Status aufgetreten. Lass uns neu starten: Bitte wähle 1 für Deutsch oder 2 for English.\nThere was an internal state error. Let’s restart: please choose 1 for German or 2 for English.";
+          "Es ist ein interner Fehler im Status aufgetreten. Lass uns neu starten: Bitte wähle deine Sprache (1-5).\nThere was an internal state error. Let’s restart: please choose your language (1-5).";
       }
     }
 
@@ -2208,8 +2417,6 @@ export async function handleIncomingBotMessage(
 
     return { reply: replyText, orderId: order.id };
   });
-}
-
 }
 
 // End of file: ensure top-level block is closed

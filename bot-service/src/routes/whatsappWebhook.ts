@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import express from "express";
-import fetch from "node-fetch";
 import twilio from "twilio";
 import { env } from "../config/env";
+import { botQueue } from "../queue/botQueue";
+import { logger } from "../utils/logger";
 
 const router = express.Router();
 
@@ -17,37 +18,27 @@ function validateTwilioSignature(req: express.Request): boolean {
   const proto = req.get("x-forwarded-proto") || req.protocol || "https";
   const url = `${proto}://${host}${req.originalUrl}`;
 
-  console.log("[Twilio Webhook] Signature check", {
-    hasToken: !!authToken,
-    enforce,
-    url
-  });
-
   if (!enforce || !authToken) {
-    // Skip validation in dev/debug if not enforced or token missing
     return true;
   }
 
   const signature = (req.headers["x-twilio-signature"] as string) || "";
   if (!signature) {
-    console.error("[Twilio Webhook] Missing X-Twilio-Signature header");
+    logger.error("[Twilio Webhook] Missing X-Twilio-Signature header");
     return false;
   }
 
-  // Prefer built-in validator from the Twilio SDK if available
   try {
     const validator = (twilio as any).validateRequest;
     if (typeof validator === "function") {
-      // Twilio SDK expects: (authToken, signature, url, params)
       const valid = validator(authToken, signature, url, req.body || {});
       if (valid) return true;
-      console.warn("[Twilio Webhook] twilio.validateRequest failed, falling back to manual check");
     }
-  } catch (e: unknown) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    console.warn("[Twilio Webhook] twilio.validateRequest threw, falling back to manual check", errMsg);
+  } catch (e) {
+    // ignore
   }
 
+  // Fallback manual check
   const params = req.body || {};
   const sortedKeys = Object.keys(params).sort();
   let data = url;
@@ -56,7 +47,6 @@ function validateTwilioSignature(req: express.Request): boolean {
   }
 
   const expected = crypto.createHmac("sha1", authToken).update(data).digest("base64");
-
   try {
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
   } catch {
@@ -64,22 +54,9 @@ function validateTwilioSignature(req: express.Request): boolean {
   }
 }
 
-function xmlEscape(str: string): string {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;")
-    .replace(/\n/g, "&#10;");
-}
-
 router.post("/", async (req, res) => {
   if (!validateTwilioSignature(req)) {
-    const twimlReject = `<Response><Message>${xmlEscape(
-      "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut."
-    )}</Message></Response>`;
-    return res.type("text/xml").status(401).send(twimlReject);
+    return res.status(401).send("<Response></Response>");
   }
 
   const from = (req.body?.From as string) || "";
@@ -95,68 +72,25 @@ router.post("/", async (req, res) => {
     }
   }
 
-  // Log incoming Twilio webhook payload
-  console.log("[Twilio Webhook] Incoming", { from, text, numMedia, mediaUrls });
-  console.log("[Twilio Webhook] Forwarding to bot/message", {
-    from,
-    safeText: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
-    hasMedia: mediaUrls.length > 0
-  });
-  const replyFallback = "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später erneut.";
-  let replyText: string = replyFallback;
+  logger.info("[Twilio Webhook] Enqueuing job", { from, textShort: text.slice(0, 50), media: numMedia });
 
+  // Add to Queue
   try {
-    const safeText = text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : "");
-    const botPayload = {
+    await botQueue.add("whatsapp-msg", {
       from,
-      text: safeText,
-      orderId: null,
+      text: text || (mediaUrls.length > 0 ? "IMAGE_MESSAGE" : ""),
+      orderId: null, // logic to find orderId is inside handleIncomingBotMessage usually, or we pass null
       mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined
-    };
-
-    const botResponse = await fetch("https://autoteile-bot-service.onrender.com/bot/message", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(env.botApiSecret ? { "x-bot-secret": env.botApiSecret } : {})
-      },
-      body: JSON.stringify(botPayload)
     });
 
-    if (!botResponse.ok) {
-      throw new Error(`Bot API returned status ${botResponse.status}`);
-    }
-
-    const data = (await botResponse.json()) as { reply?: string };
-    replyText = data.reply || replyText;
+    // Determine if we should send an immediate "typing" or "processing" status?
+    // For now, just return 200 OK. Twilio expects TwiML or empty.
+    // An empty response tells Twilio "We got it, no immediate reply".
+    // We will reply asynchronously via the Worker.
+    res.type("text/xml").send("<Response></Response>");
   } catch (err: any) {
-    console.error("[Twilio Webhook] Error calling bot/message", { error: err?.message });
-    replyText = `${replyText} / A technical error occurred. Please try again later.`;
-  }
-
-  // Send WhatsApp reply via Twilio REST API
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber =
-    process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886"; // Twilio sandbox default
-
-  if (!accountSid || !authToken) {
-    console.error("[Twilio Webhook] Missing Twilio credentials, cannot send reply");
-    return res.status(500).json({ error: "Twilio not configured" });
-  }
-
-  try {
-    const client = twilio(accountSid, authToken);
-    await client.messages.create({
-      from: fromNumber,
-      to: from,
-      body: replyText
-    });
-    console.log("[Twilio Webhook] WhatsApp reply sent", { to: from, bodyPreview: replyText.slice(0, 120) });
-    return res.status(200).json({ ok: true });
-  } catch (err: any) {
-    console.error("[Twilio Webhook] Failed to send WhatsApp reply", { error: err?.message, to: from });
-    return res.status(500).json({ error: "Failed to send reply", details: err?.message });
+    logger.error("[Twilio Webhook] Failed to enqueue", { error: err?.message });
+    res.status(500).send("Internal Error");
   }
 });
 

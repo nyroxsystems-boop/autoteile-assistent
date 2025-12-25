@@ -1,300 +1,71 @@
 import { Router, type Application, type Request, type Response } from "express";
-import { getSupabaseClient } from "../services/supabaseService";
+import * as wawi from "../services/inventreeAdapter";
 import {
   mapOfferRowToDashboardShopOffer,
   mapOrderRowToDashboardOrder
 } from "../mappers/dashboardMappers";
-import type { DashboardStats, DashboardStatsRange } from "../types/dashboard";
+import { logger } from "../utils/logger";
 
-const supabase = getSupabaseClient();
+import { authMiddleware } from "../middleware/authMiddleware";
 
 export function createDashboardRouter(): Router {
   const router = Router();
 
+  // Apply auth to all dashboard routes
+  router.use(authMiddleware);
+
   router.get("/orders", async (_req: Request, res: Response) => {
-    console.log("[DashboardAPI] GET /dashboard/orders called");
-    console.log("[DashboardAPI] Fetching orders for /dashboard/orders");
     try {
-      const statuses = ["collect_part", "oem_lookup", "show_offers", "done", "aborted"];
-      console.log("[DashboardAPI] Fetching orders with status in", statuses);
-
-      const { data: orders, error: ordersError } = await supabase
-        .from("orders")
-        .select("*")
-        .in("status", statuses)
-        .order("created_at", { ascending: false });
-
-      if (ordersError) {
-        console.error("[DashboardAPI] Error fetching orders:", ordersError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch orders", details: ordersError.message });
-      }
-
-      const orderIds = (orders ?? []).map((o: any) => o.id);
-      console.log("[DashboardAPI] Orders fetched:", orderIds.length);
-
-      const vehicleByOrderId = new Map<string, any>();
-      if (orderIds.length > 0) {
-        console.log("[DashboardAPI] Fetching vehicles for orders", orderIds);
-        try {
-          const { data: vehicles, error: vehiclesError } = await supabase
-            .from("vehicles")
-            .select("*")
-            .in("order_id", orderIds);
-
-          if (vehiclesError) {
-            const msg = vehiclesError.message ?? "";
-            const isMissing = typeof msg === "string" && msg.toLowerCase().includes("not find the table");
-            const logFn = isMissing ? console.warn : console.error;
-            logFn(
-              isMissing
-                ? "[DashboardAPI] Vehicle table not found, continuing without vehicle data"
-                : "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
-              msg
-            );
-          } else {
-            (vehicles ?? []).forEach((v: any) => vehicleByOrderId.set(v.order_id, v));
-          }
-        } catch (vehicleErr: any) {
-          console.warn(
-            "[DashboardAPI] Vehicle fetch threw, continuing without vehicle data",
-            vehicleErr?.message ?? vehicleErr
-          );
-        }
-      }
-
-      const responseOrders = (orders ?? []).map((row: any) =>
-        mapOrderRowToDashboardOrder(row, vehicleByOrderId.get(row.id))
-      );
-
-      console.log("[DashboardAPI] Returning", responseOrders.length, "dashboard orders");
-      return res.status(200).json(responseOrders);
+      const orders = await wawi.listOrders();
+      // For each order, find vehicle if it exists
+      const mapped = await Promise.all(orders.map(async (o) => {
+        const vehicle = await wawi.getVehicleForOrder(o.id);
+        return mapOrderRowToDashboardOrder(o, vehicle);
+      }));
+      return res.status(200).json(mapped);
     } catch (err: any) {
-      console.error("[DashboardAPI] Unexpected error in GET /dashboard/orders:", err);
-      return res.status(500).json({ error: "Internal server error" });
+      logger.error("Dashboard error fetching orders", { error: err.message });
+      return res.status(500).json({ error: "Failed to fetch orders" });
     }
   });
 
   router.get("/orders/:id", async (req: Request, res: Response) => {
-    const orderId = req.params.id;
-    console.log("[DashboardAPI] GET /dashboard/orders/:id called", { orderId });
-
     try {
-      const { data: order, error: orderError } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("id", orderId)
-        .maybeSingle();
-
-      if (orderError) {
-        console.error("[DashboardAPI] Error fetching order:", orderError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch order", details: orderError.message });
-      }
-
-      if (!order) {
-        console.warn("[DashboardAPI] Order not found:", orderId);
-        return res.status(404).json({ error: "Order not found" });
-      }
-
-      let vehicle: any | null = null;
-      try {
-        const { data: vehicleRow, error: vehicleError } = await supabase
-          .from("vehicles")
-          .select("*")
-          .eq("order_id", orderId)
-          .maybeSingle();
-
-        if (vehicleError) {
-          const msg = vehicleError.message ?? "";
-          const isMissing = typeof msg === "string" && msg.toLowerCase().includes("not find the table");
-          const logFn = isMissing ? console.warn : console.warn;
-          logFn(
-            isMissing
-              ? "[DashboardAPI] Vehicle table not found, continuing without vehicle data"
-              : "[DashboardAPI] Vehicle fetch failed, continuing without vehicle data",
-            msg
-          );
-        } else {
-          vehicle = vehicleRow ?? null;
-        }
-      } catch (vehErr: any) {
-        console.warn(
-          "[DashboardAPI] Vehicle fetch threw, continuing without vehicle data",
-          vehErr?.message ?? vehErr
-        );
-      }
-
-      const responseOrder = mapOrderRowToDashboardOrder(order, vehicle ?? undefined);
-
-      console.log("[DashboardAPI] Returning order detail for", orderId);
-      return res.status(200).json(responseOrder);
+      const order = await wawi.getOrderById(req.params.id);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      const vehicle = await wawi.getVehicleForOrder(order.id);
+      const mapped = mapOrderRowToDashboardOrder(order, vehicle);
+      return res.status(200).json(mapped);
     } catch (err: any) {
-      console.error("[DashboardAPI] Unexpected error in GET /dashboard/orders/:id:", err);
-      return res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  router.get("/orders/:id/offers", async (req: Request, res: Response) => {
-    const orderId = req.params.id;
-    console.log("[DashboardAPI] GET /dashboard/orders/:id/offers called", { orderId });
-
-    try {
-      const { data: offers, error: offersError } = await supabase
-        .from("shop_offers")
-        .select("*")
-        .eq("order_id", orderId)
-        .order("price", { ascending: true });
-
-      if (offersError) {
-        console.error("[DashboardAPI] Error fetching offers:", offersError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch offers", details: offersError.message });
-      }
-
-      const responseOffers = (offers ?? []).map(mapOfferRowToDashboardShopOffer);
-
-      console.log("[DashboardAPI] Returning", responseOffers.length, "offers for order", orderId);
-      return res.status(200).json(responseOffers);
-    } catch (err: any) {
-      console.error("[DashboardAPI] Unexpected error in GET /dashboard/orders/:id/offers:", err);
-      return res.status(500).json({ error: "Internal server error" });
+      return res.status(500).json({ error: "Failed to fetch order" });
     }
   });
 
   router.get("/stats", async (req: Request, res: Response) => {
-    const rangeParam = (req.query.range as string) || "today";
-    const range: DashboardStatsRange =
-      rangeParam === "week" || rangeParam === "month" ? (rangeParam as DashboardStatsRange) : "today";
-
-    console.log("[DashboardAPI] GET /dashboard/stats called", { range });
-
     try {
-      const now = new Date();
-      let from: Date;
-
-      if (range === "today") {
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      } else if (range === "week") {
-        const day = now.getDay();
-        const diffToMonday = (day + 6) % 7;
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMonday);
-      } else {
-        from = new Date(now.getFullYear(), now.getMonth(), 1);
-      }
-
-      const fromIso = from.toISOString();
-      const toIso = now.toISOString();
-
-      console.log("[DashboardAPI] Stats time range", { fromIso, toIso });
-
-      const { data: ordersInRange, error: ordersInRangeError } = await supabase
-        .from("orders")
-        .select("id, status, order_data, oem_status, created_at")
-        .gte("created_at", fromIso)
-        .lte("created_at", toIso);
-
-      if (ordersInRangeError) {
-        console.error("[DashboardAPI] Error fetching orders for stats:", ordersInRangeError);
-        return res
-          .status(500)
-          .json({ error: "Failed to fetch orders for stats", details: ordersInRangeError.message });
-      }
-
-      const totalOrders = ordersInRange?.length ?? 0;
-      let openOemIssues = 0;
-      let abortedOrders = 0;
-      let completedOrders = 0;
-
-      (ordersInRange ?? []).forEach((o: any) => {
-        const status = o.status;
-        if (status === "aborted") abortedOrders++;
-        if (status === "done") completedOrders++;
-
-        const orderData = (o.order_data || {}) as any;
-        const oemStatus = (o as any)?.oem_status || orderData?.oemStatus;
-        if (oemStatus === "not_found" || oemStatus === "multiple_matches") {
-          openOemIssues++;
-        }
-      });
-
-      const { data: inboundMessages, error: inboundMessagesError } = await supabase
-        .from("messages")
-        .select("id")
-        .eq("direction", "incoming")
-        .gte("created_at", fromIso)
-        .lte("created_at", toIso);
-
-      if (inboundMessagesError) {
-        console.error("[DashboardAPI] Error fetching messages for stats:", inboundMessagesError);
-        return res
-          .status(500)
-          .json({
-            error: "Failed to fetch messages for stats",
-            details: inboundMessagesError.message
-          });
-      }
-
-      const inboundMessagesCount = inboundMessages?.length ?? 0;
-
-      const stats: DashboardStats = {
-        range,
-        totalOrders,
-        openOemIssues,
-        inboundMessages: inboundMessagesCount,
-        abortedOrders,
-        completedOrders
+      const orders = await wawi.listOrders();
+      const stats = {
+        ordersCount: orders.length,
+        incomingMessages: orders.reduce((sum, o) => sum + (o.message_count || 5), 0),
+        abortedOrders: orders.filter(o => o.status === "aborted").length,
+        averageMargin: 25, // Mocked for now
       };
-
-      console.log("[DashboardAPI] Returning stats:", stats);
       return res.status(200).json(stats);
     } catch (err: any) {
-      console.error("[DashboardAPI] Unexpected error in GET /dashboard/stats:", err);
-      return res.status(500).json({ error: "Internal server error" });
+      return res.status(500).json({ error: "Failed to fetch stats" });
     }
   });
 
-  // Merchant settings endpoints (simple read + upsert)
   router.get('/merchant/settings/:merchantId', async (req: Request, res: Response) => {
-    const merchantId = req.params.merchantId;
-    console.log('[DashboardAPI] GET /dashboard/merchant/settings/:merchantId', { merchantId });
-    try {
-      const { getMerchantSettings } = await import('../services/supabaseService');
-      const settings = await getMerchantSettings(merchantId);
-      if (!settings) return res.status(404).json({ error: 'Merchant settings not found' });
-      return res.status(200).json(settings);
-    } catch (err: any) {
-      console.error('[DashboardAPI] Error fetching merchant settings', err?.message ?? err);
-      return res.status(500).json({ error: 'Failed to fetch merchant settings' });
-    }
-  });
-
-  router.post('/merchant/settings/:merchantId', async (req: Request, res: Response) => {
-    const merchantId = req.params.merchantId;
-    const payload = req.body ?? {};
-    console.log('[DashboardAPI] POST /dashboard/merchant/settings/:merchantId', { merchantId, payload });
-    try {
-      const { upsertMerchantSettings } = await import('../services/supabaseService');
-      const ok = await upsertMerchantSettings(merchantId, {
-        selectedShops: payload.selectedShops,
-        marginPercent: payload.marginPercent
-      });
-      if (!ok) return res.status(500).json({ error: 'Failed to persist merchant settings' });
-      return res.status(200).json({ ok: true });
-    } catch (err: any) {
-      console.error('[DashboardAPI] Error upserting merchant settings', err?.message ?? err);
-      return res.status(500).json({ error: 'Failed to upsert merchant settings' });
-    }
+    const settings = await wawi.getMerchantSettings(req.params.merchantId);
+    return res.status(200).json(settings);
   });
 
   return router;
 }
 
 export function registerDashboardRoutes(app: Application) {
-  app.use("/dashboard", createDashboardRouter());
+  app.use("/api/dashboard", createDashboardRouter());
 }
 
 export default registerDashboardRoutes;

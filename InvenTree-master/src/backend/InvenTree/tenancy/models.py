@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from .managers import TenantManager
+from .context import get_current_tenant
 
 
 class Tenant(models.Model):
@@ -19,6 +20,8 @@ class Tenant(models.Model):
     slug = models.SlugField(unique=True)
     status = models.CharField(max_length=20, default='active')
     is_active = models.BooleanField(default=True)
+    max_users = models.IntegerField(default=5, help_text=_('Maximum number of users allowed for this tenant'))
+    max_devices = models.IntegerField(default=10, help_text=_('Maximum number of concurrent devices/sessions allowed for this tenant'))
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -68,7 +71,7 @@ class TenantUser(models.Model):
 class TenantScopedModel(models.Model):
     """Abstract base for tenant-scoped entities."""
 
-    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, db_index=True)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, db_index=True, null=True, blank=True)
 
     # Automatically tenant-filtered queryset
     objects = TenantManager()
@@ -82,7 +85,19 @@ class TenantScopedModel(models.Model):
         """Validate tenant is set."""
         super().clean()
         if self.tenant_id is None:
-            raise ValidationError({'tenant': _('Tenant must be set')})
+            tenant = get_current_tenant()
+            if tenant is not None:
+                self.tenant = tenant
+            else:
+                raise ValidationError({'tenant': _('Tenant must be set')})
+
+    def save(self, *args, **kwargs):
+        """Ensure tenant is set before saving."""
+        if self.tenant_id is None:
+            tenant = get_current_tenant()
+            if tenant is not None:
+                self.tenant = tenant
+        super().save(*args, **kwargs)
 
 
 class ServiceToken(models.Model):
@@ -142,3 +157,22 @@ class ServiceToken(models.Model):
         if not scope:
             return True
         return scope in (self.scopes or []) or '*' in (self.scopes or [])
+
+
+class TenantDevice(models.Model):
+    """Tracks active sessions/devices for a tenant user."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='active_devices')
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='active_devices')
+    device_id = models.CharField(max_length=255, db_index=True)
+    last_seen = models.DateTimeField(auto_now=True)
+    user_agent = models.TextField(blank=True, null=True)
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ('user', 'tenant', 'device_id')
+        verbose_name = _('Tenant Device')
+        verbose_name_plural = _('Tenant Devices')
+
+    def __str__(self):
+        return f'{self.user.username} - {self.device_id}'

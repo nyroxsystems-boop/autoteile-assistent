@@ -12,8 +12,10 @@ from tenancy.serializers_admin import (
     ServiceTokenCreateSerializer,
     TenantSerializer,
     TenantUserCreateSerializer,
+    TenantUserCreateSerializer,
     WhatsAppChannelCreateSerializer,
 )
+from rest_framework.views import APIView
 
 
 class TenantAdminViewSet(viewsets.ModelViewSet):
@@ -28,6 +30,13 @@ class TenantAdminViewSet(viewsets.ModelViewSet):
     def create_user(self, request, pk=None):
         """Create tenant user account."""
         tenant = self.get_object()
+        
+        # Enforce user limit
+        if tenant.memberships.count() >= tenant.max_users:
+            return Response({
+                'detail': f'Maximale Anzahl an Benutzern ({tenant.max_users}) für diesen Tenant erreicht.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = TenantUserCreateSerializer(
             data=request.data, context={'tenant': tenant}
         )
@@ -50,6 +59,29 @@ class TenantAdminViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         channel = serializer.save()
         return Response({'id': channel.id, 'tenant_id': tenant.id, 'phone_number_id': channel.phone_number_id}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='devices')
+    def list_devices(self, request, pk=None):
+        """List active devices for tenant."""
+        tenant = self.get_object()
+        devices = tenant.active_devices.all().select_related('user')
+        data = [{
+            'id': d.id,
+            'user': d.user.username,
+            'device_id': d.device_id,
+            'last_seen': d.last_seen,
+            'ip': d.ip_address,
+            'ua': d.user_agent
+        } for d in devices]
+        return Response(data)
+
+    @action(detail=True, methods=['post'], url_path='remove-device')
+    def remove_device(self, request, pk=None):
+        """Force logout a device."""
+        tenant = self.get_object()
+        device_id = request.data.get('device_id')
+        tenant.active_devices.filter(device_id=device_id).delete()
+        return Response({'status': 'deleted'})
 
 
 class ServiceTokenViewSet(viewsets.ModelViewSet):
@@ -89,3 +121,35 @@ class ServiceTokenViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class AdminStatsView(APIView):
+    """Global oversight stats for Owner Admins."""
+
+    permission_classes = [IsAuthenticated, IsOwner]
+
+    def get(self, request):
+        tenants = Tenant.objects.all()
+        total_tenants = tenants.count()
+        total_users = TenantUser.objects.count()
+        active_devices = TenantDevice.objects.count()
+        
+        tenant_stats = []
+        for t in tenants:
+            tenant_stats.append({
+                'id': t.id,
+                'name': t.name,
+                'slug': t.slug,
+                'user_count': t.memberships.count(),
+                'max_users': t.max_users,
+                'device_count': t.active_devices.count(),
+                'max_devices': t.max_devices,
+                'is_active': t.is_active,
+            })
+
+        return Response({
+            'total_tenants': total_tenants,
+            'total_users': total_users,
+            'total_devices': active_devices,
+            'tenants': tenant_stats
+        })
