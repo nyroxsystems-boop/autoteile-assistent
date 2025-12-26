@@ -578,10 +578,7 @@ django-markdownify==0.9.5 \
     --hash=sha256:2c4ae44e386c209453caf5e9ea1b74f64535985d338ad2d5ad5e7089cc94be86 \
     --hash=sha256:34c34eba4a797282a5c5bd97b13cec84d6a4c0673ad47ce1c1d000d74dd8d4ab
     # via -r requirements.in
-django-money==3.5.4 \
-    --hash=sha256:25933ed6177f8dc981114db813c7c5d36c7c89bc4017f2b1b2bb0209b5f68876 \
-    --hash=sha256:628b3afb6671edc2cbd26743d858c31d3b99a735357f7acb6a399ab3ab008d2b
-    # via -r requirements.in
+
 django-mptt==0.18.0 \
     --hash=sha256:bfa3f01627e3966a1df901aeca74570a3e933e66809ebf58d9df673e63627afb \
     --hash=sha256:cf5661357ff22bc64e20d3341c26e538aa54583aea0763cfe6aaec0ab8e3a8ee
