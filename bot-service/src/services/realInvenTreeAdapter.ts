@@ -20,7 +20,7 @@ const api = axios.create({
 
 // Pass-through READS (Local SQLite is source of truth for speed)
 export const testDbConnection = localAdapter.testDbConnection;
-export const getOrderById = localAdapter.getOrderById;
+
 export const getVehicleForOrder = localAdapter.getVehicleForOrder;
 export const listShopOffersByOrderId = localAdapter.listShopOffersByOrderId;
 export const listActiveOrdersByContact = localAdapter.listActiveOrdersByContact;
@@ -76,6 +76,32 @@ export async function updateOrder(orderId: string | number, patch: any) {
     const result = await localAdapter.updateOrder(orderId, patch);
     await syncToWWS(orderId);
     return result;
+}
+
+export async function getOrderById(orderId: string) {
+    // 1. Try Local SQLite (Cache)
+    const local = await localAdapter.getOrderById(orderId);
+    if (local) return local;
+
+    // 2. Fallback: Try InvenTree API (Source of Truth)
+    try {
+        const response = await api.get(`/ext/orders/${orderId}/`);
+        if (response.data && response.data.payload) {
+            // Restore to local cache so subsequent reads are fast
+            await localAdapter.insertOrder({
+                ...response.data.payload,
+                // Ensure we don't overwrite if it somehow exists or handle conflict?
+                // For now just insert, assuming it doesn't exist locally
+            });
+            return response.data.payload;
+        }
+    } catch (err: any) {
+        if (err.response?.status === 404) {
+            return null; // Not found in sync either
+        }
+        logger.warn(`Failed to fetch order ${orderId} from WWS: ${err.message}`);
+    }
+    return null;
 }
 
 export async function updateOrderData(orderId: string | number, data: any) {
