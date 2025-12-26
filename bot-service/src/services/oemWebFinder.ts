@@ -338,6 +338,31 @@ async function searchOemOnMotointegrator(ctx: SearchContext): Promise<OemCandida
   }
 }
 
+async function searchOemOnEbay(ctx: SearchContext): Promise<OemCandidate[]> {
+  try {
+    // eBay Keyword Search
+    // Strategy: Use Brand + Model + Part, or just Part number if suspected
+    const q = ctx.suspectedNumber
+      ? ctx.suspectedNumber
+      : [ctx.vehicle.brand, ctx.vehicle.model, ctx.userQuery].filter(Boolean).join(" ");
+
+    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=0`;
+    const html = await fetchTextWithFallback(url);
+
+    // eBay often puts MPN in "s-item__details" or title
+    // Generic extraction works well for titles (e.g. "Bremsscheibe ATE 12345...")
+    const oems = extractOemsFromHtml(html);
+
+    // Optional: AI Refinement if enabled
+    const aiOems = await aiExtractOemsFromHtml(html, ctx);
+
+    return [...oems, ...aiOems].map((o: string) => ({ source: "eBay", rawValue: o, normalized: o }));
+  } catch (err) {
+    // Silent fail for scraper
+    return [];
+  }
+}
+
 // ----------------------------------
 // Fallback-Resolver (Platzhalter)
 // ----------------------------------
@@ -436,6 +461,13 @@ export async function findBestOemForVehicle(ctx: SearchContext, useFallback = tr
   let candidates: OemCandidate[] = [];
   for (const q of queryVariants) {
     candidates.push(...(await scrapeOnce(q)));
+  }
+
+  // eBay-Specific Search (High Value)
+  // We run this separately because it's a key requirement from the user
+  if (ctx.userQuery) {
+    const ebayCands = await searchOemOnEbay(ctx);
+    candidates.push(...ebayCands);
   }
 
   // Histogramm bauen
