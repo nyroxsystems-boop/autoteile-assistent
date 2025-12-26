@@ -5,14 +5,14 @@ echo "==> Installing InvenTree dependencies..."
 
 cd src/backend
 
-# Install without hash checking (setuptools issue)
-pip install --no-deps -r requirements.txt || pip install -r requirements.txt --no-deps
+# Install main requirements
+# Note: We use the lockfile with hashes.
+pip install -r requirements.txt
 
-# Install setuptools separately
-pip install setuptools
-
-# Now install with dependencies
-pip install -r requirements.txt --no-binary :all: || pip install -r requirements.txt
+# Install Render-specific dependencies (Bypassing hash check)
+# These are required for the Render environment but not strictly pinned in requirements.txt
+echo "==> Installing Render adapters..."
+pip install psycopg2-binary dj-database-url
 
 echo "==> Running migrations..."
 cd InvenTree
@@ -22,3 +22,4 @@ echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
 
 echo "==> Setup completed successfully!"
+
