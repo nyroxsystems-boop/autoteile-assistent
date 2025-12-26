@@ -1,6 +1,19 @@
 import os
-
+import dj_database_url
 from .settings import *  # noqa
+
+print("--- LOADING RENDER SETTINGS ---")
+
+# Database configuration for Render
+# Render provides DATABASE_URL for managed PostgreSQL
+if 'DATABASE_URL' in os.environ:
+    print(f"Configuring Database from DATABASE_URL: {os.environ['DATABASE_URL'].split('@')[-1]}") # Log safe part
+    DATABASES['default'] = dj_database_url.config(
+        conn_max_age=600,
+        ssl_require='render' in os.environ.get('RENDER_EXTERNAL_HOSTNAME', '') # SSL usually required on Render
+    )
+else:
+    print("WARNING: No DATABASE_URL found. Using default settings from settings.py")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
