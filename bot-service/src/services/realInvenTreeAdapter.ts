@@ -164,3 +164,54 @@ export async function upsertConversationState(waId: string, state: any) {
     }
     return result;
 }
+
+// --------------------------------------------------------------------------
+// CRM / Company Integration (InvenTree)
+// --------------------------------------------------------------------------
+
+export interface InvenTreeCompany {
+    pk?: number;
+    name: string;
+    description?: string;
+    website?: string;
+    phone?: string;
+    email?: string;
+    is_customer: boolean;
+    is_supplier: boolean;
+    active: boolean;
+    currency?: string;
+    metadata?: any;
+}
+
+export async function createCompany(company: InvenTreeCompany) {
+    if (!BASE_URL || !API_TOKEN) throw new Error("InvenTree not configured");
+    try {
+        const response = await api.post('/api/company/', company);
+        return response.data;
+    } catch (error: any) {
+        logger.error(`Failed to create company: ${error.message}`);
+        throw error;
+    }
+}
+
+export async function getCompanies(params: { is_customer?: boolean, is_supplier?: boolean, search?: string, active?: boolean } = {}) {
+    if (!BASE_URL || !API_TOKEN) return [];
+    try {
+        const response = await api.get('/api/company/', { params });
+        return response.data;
+    } catch (error: any) {
+        logger.error(`Failed to fetch companies: ${error.message}`);
+        return [];
+    }
+}
+
+export async function updateCompany(id: number, patch: Partial<InvenTreeCompany>) {
+    if (!BASE_URL || !API_TOKEN) throw new Error("InvenTree not configured");
+    try {
+        const response = await api.patch(`/api/company/${id}/`, patch);
+        return response.data;
+    } catch (error: any) {
+        logger.error(`Failed to update company ${id}: ${error.message}`);
+        throw error;
+    }
+}

@@ -94,6 +94,10 @@ app.use("/internal", createInternalRouter());
 import { createAdminRouter } from "./routes/adminRoutes";
 app.use("/api/admin", createAdminRouter());
 
+// CRM Integration API (Leads -> InvenTree)
+import { createCrmRouter } from "./routes/crmRoutes";
+app.use("/api/crm", createCrmRouter());
+
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte
 // WhatsApp-API angesprochen.
