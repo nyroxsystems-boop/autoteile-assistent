@@ -66,8 +66,28 @@ export const sendInvoice = async (id: string | number): Promise<Invoice> => getI
 export const markInvoicePaid = async (id: string | number): Promise<Invoice> => getInvoice(id);
 export const cancelInvoice = async (id: string | number): Promise<Invoice> => getInvoice(id);
 
-export const downloadInvoicePdf = async (_id: string | number) => {
-  console.warn('[invoices] PDF Download nicht verfügbar (Orders-Proxy)');
+export const downloadInvoicePdf = async (id: string | number) => {
+  const token = localStorage.getItem('token');
+  // Use raw fetch for file blob
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/invoices/${id}/pdf`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error('PDF Download fehlgeschlagen');
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Rechnung-${id}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
 };
 
 export const createInvoiceFromOrder = async (orderId: string | number): Promise<Invoice> =>

@@ -1,44 +1,46 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import PageHeader from '../ui/PageHeader';
 import { useTimeframe } from '../features/timeframe/TimeframeContext';
+import apiClient from '../lib/apiClient';
 
-const kpiData = [
-  { title: 'Vermeidbarer Umsatzverlust', value: '14.800 €', desc: 'letzte 30 Tage' },
-  { title: 'Haupttreiber', value: 'Lieferzeit & Kompatibilität', desc: 'Top 2 Ursachen' },
-  { title: 'Betroffene SKUs', value: '17', desc: '>10% Abbruch/Retouren' }
-];
-
-const causeData = [
-  { label: 'Lieferzeit zu lang', value: 38 },
-  { label: 'Preis zu hoch', value: 22 },
-  { label: 'Kompatibilität unklar', value: 31 },
-  { label: 'Doppelbestellung', value: 12 },
-  { label: 'Qualitätsmangel', value: 18 }
-];
-
-const hotspotData = [
-  { sku: 'BREM-2440', cause: 'Lieferzeit zu lang', abbruch: '18%', retouren: '6%', marge: '14%', note: 'Express-Option anbieten' },
-  { sku: 'FILTER-900', cause: 'Preis zu hoch', abbruch: '12%', retouren: '3%', marge: '22%', note: 'Bundle mit Öl filter' },
-  { sku: 'RADLAGER-77', cause: 'Kompatibilität unklar', abbruch: '15%', retouren: '5%', marge: '19%', note: 'Kompatibilitätstext ergänzen' },
-  { sku: 'BATT-AGM60', cause: 'Doppelbestellung', abbruch: '9%', retouren: '8%', marge: '11%', note: 'Warenkorb-Prüfung verstärken' },
-  { sku: 'WISCH-SET2', cause: 'Qualitätsmangel', abbruch: '6%', retouren: '10%', marge: '24%', note: 'Lieferant prüfen' },
-  { sku: 'OEL-5W30', cause: 'Preis zu hoch', abbruch: '7%', retouren: '2%', marge: '17%', note: 'Preisstaffel prüfen' }
-];
+interface ForensicsStats {
+  lostRevenue: number;
+  drivers: { label: string; value: number }[];
+  hotspots: { sku: string; cause: string; abbruch: string; retouren: string; marge: string; note: string }[];
+}
 
 const ForensicsPage = () => {
   const { timeframe } = useTimeframe();
   const [selected, setSelected] = useState<string[]>([]);
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const allSelected = selected.length === hotspotData.length;
+  const [data, setData] = useState<ForensicsStats | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const { data } = await apiClient.get('/api/dashboard/analytics/forensics');
+        if (data) setData(data as ForensicsStats);
+      } catch (e) { console.error(e); }
+      finally { setLoading(false); }
+    };
+    load();
+  }, []);
+
+  const hotspotData = data?.hotspots || [];
+  const allSelected = selected.length === hotspotData.length && hotspotData.length > 0;
   const toggleAll = () => setSelected(allSelected ? [] : hotspotData.map((h) => h.sku));
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
-  const detail = useMemo(() => hotspotData.find((h) => h.sku === detailsId) ?? hotspotData[0], [detailsId]);
+  const detail = useMemo(() => hotspotData.find((h) => h.sku === detailsId) ?? hotspotData[0], [detailsId, hotspotData]);
+
+  if (loading) return <div style={{ padding: 20 }}>Lade Forensik-Daten...</div>;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -48,25 +50,33 @@ const ForensicsPage = () => {
         actions={
           <>
             <Button variant="secondary" size="sm">Export</Button>
-            <Button variant="primary" size="sm">Bericht erstellen (Demo)</Button>
+            <Button variant="primary" size="sm">Bericht erstellen</Button>
           </>
         }
       />
 
       <Card>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-          {kpiData.map((k) => (
-            <Card key={k.title}>
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>{k.title}</div>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>{k.value}</div>
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>{k.desc}</div>
-            </Card>
-          ))}
+          <Card>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>Vermeidbarer Umsatzverlust</div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{data?.lostRevenue ? `${data.lostRevenue} €` : '0 €'}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>letzte 30 Tage</div>
+          </Card>
+          <Card>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>Haupttreiber</div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{data?.drivers?.[0]?.label || 'Keine Daten'}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>Top Ursache</div>
+          </Card>
+          <Card>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>Betroffene SKUs</div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{data?.hotspots?.length || 0}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12 }}>mit &gt;10% Abbruch</div>
+          </Card>
         </div>
       </Card>
 
       <Card title="Abbruch- & Retourenursachen">
-        <CauseBarChart data={causeData} />
+        <CauseBarChart data={data?.drivers || []} />
       </Card>
 
       <Card title="Hotspots (SKU × Ursache)">
@@ -109,7 +119,7 @@ const ForensicsPage = () => {
                       variant="ghost"
                       onClick={() => {
                         setDetailsId(h.sku);
-                        setToast('Vorgemerkt (Demo)');
+                        setToast('Vorgemerkt');
                       }}
                     >
                       Details
@@ -117,19 +127,24 @@ const ForensicsPage = () => {
                   </td>
                 </tr>
               ))}
+              {hotspotData.length === 0 && (
+                <tr>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--muted)' }}>Keine Hotspots gefunden (Gut gemacht!)</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
         {detail ? (
           <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 10 }}>
             <div style={{ fontWeight: 800 }}>{detail.sku}</div>
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>Timeline (Demo): letzte 7 Events</div>
+            <div style={{ color: 'var(--muted)', fontSize: 13 }}>Timeline: letzte 7 Events</div>
             <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
               <Badge variant="warning">Ursache: {detail.cause}</Badge>
-              <Badge variant="neutral">Nachrichten: 3</Badge>
+              <Badge variant="neutral">Automatik-Analyse</Badge>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <Button variant="primary" size="sm" onClick={() => setToast('Vorgemerkt (Demo)')}>Empfehlung übernehmen</Button>
+              <Button variant="primary" size="sm" onClick={() => setToast('Vorgemerkt')}>Empfehlung übernehmen</Button>
               <Button variant="ghost" size="sm">Später</Button>
             </div>
           </div>
@@ -168,9 +183,10 @@ const CauseBarChart = ({ data }: { data: { label: string; value: number }[] }) =
               }}
             />
           </div>
-          <div style={{ width: 40, textAlign: 'right', color: 'var(--muted)', fontSize: 13 }}>{d.value}%</div>
+          <div style={{ width: 40, textAlign: 'right', color: 'var(--muted)', fontSize: 13 }}>{d.value}</div>
         </div>
       ))}
+      {data.length === 0 && <div style={{ color: 'var(--muted)' }}>Keine Daten verfügbar</div>}
     </div>
   );
 };

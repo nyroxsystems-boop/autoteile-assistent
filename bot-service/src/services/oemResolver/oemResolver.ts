@@ -1,9 +1,6 @@
 import { OEMResolverRequest, OEMResolverResult, OEMCandidate } from "./types";
 import { logger } from "../../utils/logger";
 import { cacheSource } from "./sources/cacheSource";
-import { tecdocLightSource } from "./sources/tecdocLightSource";
-import { tecdocVinRestSource } from "./sources/tecdocVinRestSource";
-import { tecdocNumberSource } from "./sources/tecdocNumberSource";
 import { shopSearchSource } from "./sources/shopSearchSource";
 import { webScrapeSource } from "./sources/webScrapeSource";
 import { llmHeuristicSource } from "./sources/llmHeuristicSource";
@@ -40,13 +37,8 @@ const SOURCES = [
   sepZapWebSource,
   // NEW HIGH-QUALITY SOURCES
   kfzteile24Source,
-  oscaroSource,
   pkwteileSource,
-  openaiVisionSource,
-  // TecDoc sources (lower priority due to API limitations)
-  tecdocLightSource,
-  tecdocVinRestSource,
-  tecdocNumberSource
+  openaiVisionSource
 ];
 
 const CONFIDENCE_THRESHOLD_VETTED = 0.96; // User requirement: 96%
@@ -127,7 +119,7 @@ export async function resolveOEM(req: OEMResolverRequest): Promise<OEMResolverRe
     })
   );
 
-  results.forEach((arr) => allCandidates.push(...arr));
+  results.forEach((arr: OEMCandidate[]) => allCandidates.push(...arr));
 
   // Smart Reverse Lookup (High Quality Hint)
   try {

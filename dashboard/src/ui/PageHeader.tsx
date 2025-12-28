@@ -1,13 +1,17 @@
 import { ReactNode } from 'react';
 
+
 type PageHeaderProps = {
   title: string;
   subtitle?: string;
+  description?: string; // Phase 4 alias
   breadcrumb?: string[];
   actions?: ReactNode;
 };
 
-const PageHeader = ({ title, subtitle, breadcrumb, actions }: PageHeaderProps) => {
+const PageHeader = ({ title, subtitle, description, breadcrumb, actions }: PageHeaderProps) => {
+  const sub = subtitle || description;
+
   return (
     <div
       style={{
@@ -30,7 +34,7 @@ const PageHeader = ({ title, subtitle, breadcrumb, actions }: PageHeaderProps) =
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontSize: 24, fontWeight: 800 }}>{title}</div>
-          {subtitle ? <div style={{ color: 'var(--muted)', marginTop: 4 }}>{subtitle}</div> : null}
+          {sub ? <div style={{ color: 'var(--muted)', marginTop: 4 }}>{sub}</div> : null}
         </div>
         {actions ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div> : null}
       </div>

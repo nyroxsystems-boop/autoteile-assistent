@@ -26,12 +26,21 @@ import userRouter from "./routes/userRoutes";
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*', // Allow all origins for now to prevent blocked requests
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Device-ID', 'X-Tenant-ID']
+}));
 app.use(express.json());
 
 // Einfacher Healthcheck – Service läuft?
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
+});
+
+// Root Route - Visual Confirmation
+app.get("/", (_req, res) => {
+  res.send("🚀 AutoTeile Bot Service is running!");
 });
 
 // Datenbank-Healthcheck – Verbindung funktioniert?
@@ -98,9 +107,18 @@ app.use("/api/admin", createAdminRouter());
 import { createCrmRouter } from "./routes/crmRoutes";
 app.use("/api/crm", createCrmRouter());
 
+// External Shop Integration (Phase 10)
+import shopIntegrationRouter from "./routes/shopIntegrationRoutes";
+app.use("/api/integrations", shopIntegrationRouter);
+
 // Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 // Dient nur für lokale Entwicklung und Tests – hier wird noch keine echte
 // WhatsApp-API angesprochen.
+// Product Management API (Secure Tenant Isolation)
+import productsRouter from "./routes/productRoutes";
+app.use("/api/products", productsRouter);
+
+// Simulations-Endpoint für eingehende WhatsApp-Nachrichten
 app.use("/simulate/whatsapp", simulateWhatsappRouter);
 
 // Serverstart

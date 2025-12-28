@@ -57,11 +57,25 @@ function createTables(): Promise<void> {
             name TEXT,
             email TEXT,
             role TEXT,
-            created_at TEXT
+            created_at TEXT,
+            password_hash TEXT,
+            is_active INTEGER DEFAULT 1,
+            last_login TEXT,
+            merchant_id TEXT,
+            username TEXT,
+            full_name TEXT
         )`,
         `CREATE TABLE IF NOT EXISTS merchant_settings (
             merchant_id TEXT PRIMARY KEY,
             settings TEXT
+        )`,
+        `CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            token TEXT,
+            expires_at TEXT,
+            created_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
         )`
     ];
 
@@ -77,10 +91,49 @@ function createTables(): Promise<void> {
                     }
                     completed++;
                     if (completed === queries.length) {
-                        resolve();
+                        resolve(undefined);
                     }
                 });
             });
+        });
+    }).then(() => seedInitialUser());
+}
+
+function seedInitialUser(): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const hash = 'ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f'; // password123
+        const email = 'admin@example.com';
+
+        // 1. Check if admin exists
+        db.get('SELECT id FROM users WHERE email = ?', [email], (err, row: any) => {
+            if (err) {
+                logger.error('Error checking admin user', err);
+                return resolve();
+            }
+
+            if (row) {
+                // 2. User exists: Force Update Password
+                logger.info('🔄 Admin user exists, updating password...');
+                db.run('UPDATE users SET password_hash = ?, is_active = 1 WHERE id = ?', [hash, row.id], (err) => {
+                    if (err) logger.error('Error resetting admin password', err);
+                    else logger.info('✅ Admin password reset to: password123');
+                    resolve();
+                });
+            } else {
+                // 3. User does not exist: Insert
+                logger.info('🌱 Creating new admin user...');
+                const id = 'user-' + Date.now();
+                const now = new Date().toISOString();
+
+                const sql = `INSERT INTO users (id, name, email, role, created_at, password_hash, is_active, username, full_name, merchant_id) 
+                             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`;
+
+                db.run(sql, [id, 'Admin User', email, 'admin', now, hash, 'admin', 'Admin User', 'demo-merchant'], (err) => {
+                    if (err) logger.error('Error creating admin user', err);
+                    else logger.info('✅ Created admin user: admin@example.com / password123');
+                    resolve();
+                });
+            }
         });
     });
 }

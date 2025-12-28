@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from './utils';
 
-interface CardProps {
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   title?: string;
   subtitle?: string;
   actions?: React.ReactNode;
@@ -10,9 +10,9 @@ interface CardProps {
   padded?: boolean;
 }
 
-export const Card: React.FC<CardProps> = ({ title, subtitle, actions, children, className, padded = true }) => {
+export const Card: React.FC<CardProps> = ({ title, subtitle, actions, children, className, padded = true, ...rest }) => {
   return (
-    <div className={cn('ui-card', className, { 'ui-card-padded': padded })}>
+    <div className={cn('ui-card', className, { 'ui-card-padded': padded })} {...rest}>
       {(title || subtitle || actions) && (
         <div className="ui-card-header">
           <div>

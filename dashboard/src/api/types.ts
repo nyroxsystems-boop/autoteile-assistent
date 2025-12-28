@@ -81,6 +81,17 @@ export type ShopOffer = {
   isRecommended?: boolean | null;
 };
 
+export type OrderMessage = {
+  id: string;
+  orderId: string;
+  direction: "IN" | "OUT";
+  channel: string;
+  content: string;
+  createdAt: string;
+  from: string;
+  to: string;
+};
+
 export type ApiError = {
   status?: number;
   message: string;

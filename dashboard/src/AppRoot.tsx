@@ -19,7 +19,11 @@ const navGroups: NavGroup[] = [
     label: 'Cockpit',
     items: [
       { path: '/overview', label: 'Übersicht' },
-      { path: '/recommendations', label: 'Empfehlungen' }
+      { path: '/recommendations', label: 'Empfehlungen' },
+      // Onboarding Link (Disappears after completion)
+      ...(typeof localStorage !== 'undefined' && localStorage.getItem('wws_onboarding_completed') === 'true'
+        ? []
+        : [{ path: '/onboarding', label: '✨ System Setup' }])
     ]
   },
   {
@@ -44,6 +48,8 @@ const navGroups: NavGroup[] = [
     label: 'Lager & Einkauf',
     items: [
       { path: '/inventory', label: 'Lagerübersicht' },
+      { path: '/inventory', label: 'Lagerübersicht' },
+      { path: '/products', label: 'Artikelverwaltung' },
       { path: '/inventory/capital', label: 'Gebundenes Kapital' }
     ]
   },
@@ -299,7 +305,7 @@ const InnerApp: React.FC = () => {
                   }}
                   aria-label="Profilmenü öffnen"
                 >
-                  {auth.session.merchantId?.slice(0, 2).toUpperCase()}
+                  {auth.session.user?.email?.slice(0, 2).toUpperCase() ?? 'ME'}
                 </button>
                 {showProfileMenu ? (
                   <div
@@ -319,7 +325,7 @@ const InnerApp: React.FC = () => {
                       zIndex: 15
                     }}
                   >
-                    <div style={{ fontWeight: 800 }}>{auth.session.merchantId}</div>
+                    <div style={{ fontWeight: 800 }}>{auth.session.user?.email ?? 'User'}</div>
                     <Badge variant="success">Plan aktiv</Badge>
                     <Button variant="ghost" size="sm" fullWidth>
                       Marge & Shops

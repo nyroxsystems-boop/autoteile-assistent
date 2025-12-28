@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getOrder, getOrderOffers } from '../api/orders';
-import type { Order, OrderData, SelectedOfferSummary, ShopOffer } from '../api/types';
+import { getOrder, getOrderOffers, getOrderMessages } from '../api/orders';
+import type { Order, OrderData, SelectedOfferSummary, ShopOffer, OrderMessage } from '../api/types';
 import Card from '../ui/Card';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
-import { createInvoiceFromOrder } from '../api/invoices';
+import { createInvoiceFromOrder, downloadInvoicePdf } from '../api/invoices';
 
 type OfferRow = ShopOffer & { priceValue: number; currencyValue: string };
 
@@ -14,6 +14,7 @@ const OrderDetailPage = () => {
 
   const [order, setOrder] = useState<Order | null>(null);
   const [offers, setOffers] = useState<OfferRow[]>([]);
+  const [messages, setMessages] = useState<OrderMessage[]>([]);
 
   const [orderError, setOrderError] = useState<string | null>(null);
   const [offersError, setOffersError] = useState<string | null>(null);
@@ -56,8 +57,18 @@ const OrderDetailPage = () => {
       }
     };
 
+    const fetchMessages = async () => {
+      try {
+        const msgs = await getOrderMessages(orderId);
+        setMessages(msgs);
+      } catch (e) {
+        console.error("Failed to load messages", e);
+      }
+    }
+
     fetchOrderData();
     fetchOffersData();
+    fetchMessages();
   }, [orderId]);
 
   const orderData: OrderData =
@@ -118,24 +129,33 @@ const OrderDetailPage = () => {
 
   const selectedCardOffer: any = selectedOffer ?? (selectedOfferSummary
     ? {
-        shopName: selectedOfferSummary.shopName ?? '—',
-        brand: selectedOfferSummary.brand ?? '—',
-        priceValue: selectedOfferSummary.price ?? NaN,
-        currencyValue: selectedOfferSummary.currency ?? 'EUR',
-        deliveryTimeDays: selectedOfferSummary.deliveryTimeDays ?? null,
-        productUrl: (selectedOfferSummary as any)?.productUrl ?? null,
-        id: selectedOfferId ?? undefined
-      }
+      shopName: selectedOfferSummary.shopName ?? '—',
+      brand: selectedOfferSummary.brand ?? '—',
+      priceValue: selectedOfferSummary.price ?? NaN,
+      currencyValue: selectedOfferSummary.currency ?? 'EUR',
+      deliveryTimeDays: selectedOfferSummary.deliveryTimeDays ?? null,
+      productUrl: (selectedOfferSummary as any)?.productUrl ?? null,
+      id: selectedOfferId ?? undefined
+    }
     : null);
 
   const handleCreateInvoice = async () => {
     if (!orderId) return;
     setInvoiceError(null);
     try {
-      const inv = await createInvoiceFromOrder(orderId);
-      navigate(`/orders/${inv.id}`);
+      // Just check if invoice exists or create logic is handled by download
+      await handleDownloadInvoice();
     } catch (err: any) {
       setInvoiceError(err?.message || 'Order konnte nicht erstellt werden');
+    }
+  };
+
+  const handleDownloadInvoice = async () => {
+    if (!orderId) return;
+    try {
+      await downloadInvoicePdf(orderId);
+    } catch (err: any) {
+      alert('Fehler beim Laden der Rechnung: ' + err.message);
     }
   };
 
@@ -157,6 +177,13 @@ const OrderDetailPage = () => {
         <span style={styles.routeInfo}>/orders/{orderId}</span>
       </div>
 
+      {(order?.status === 'aborted' || order?.status === 'cancelled') ? (
+        <div style={styles.abortedBanner}>
+          <div style={{ fontWeight: 'bold', marginBottom: 4 }}>⛔️ BESTELLUNG ABGEBROCHEN</div>
+          Diese Bestellung wurde vom Kunden oder System abgebrochen. Bitte nicht weiter bearbeiten.
+        </div>
+      ) : null}
+
       {orderError ? (
         <div className="error-box">
           <strong>Fehler beim Laden der Bestellung:</strong> {orderError}
@@ -174,8 +201,8 @@ const OrderDetailPage = () => {
         actions={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Badge variant="neutral">{order?.language ?? 'n/a'}</Badge>
-            <Button size="sm" onClick={handleCreateInvoice}>
-              Order erzeugen
+            <Button size="sm" onClick={handleDownloadInvoice}>
+              Rechnung drucken
             </Button>
           </div>
         }
@@ -205,6 +232,44 @@ const OrderDetailPage = () => {
             <div style={styles.label}>Dialog-Status</div>
             <div style={styles.value}>{conversationStatus}</div>
           </div>
+        </div>
+      </Card>
+
+      {/* NEW: Chat History Section */}
+      <Card title="Kommunikationsverlauf">
+        <div style={styles.chatContainer}>
+          {messages.length === 0 ? (
+            <div style={{ color: '#a0aec0', fontStyle: 'italic', padding: 20 }}>Keine Nachrichten vorhanden.</div>
+          ) : (
+            messages.map((msg) => {
+              const isOutbound = msg.direction === 'OUT'; // Bot to User
+              return (
+                <div key={msg.id} style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: isOutbound ? 'flex-end' : 'flex-start',
+                  marginBottom: 12
+                }}>
+                  <div style={{
+                    maxWidth: '75%',
+                    padding: '10px 14px',
+                    borderRadius: 12,
+                    backgroundColor: isOutbound ? 'var(--primary)' : 'rgba(255,255,255,0.1)',
+                    color: isOutbound ? '#fff' : '#e2e8f0',
+                    fontSize: 14,
+                    lineHeight: 1.4,
+                    borderBottomRightRadius: isOutbound ? 2 : 12,
+                    borderBottomLeftRadius: isOutbound ? 12 : 2
+                  }}>
+                    {msg.content}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>
+                    {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {isOutbound ? 'Bot' : 'Kunde'}
+                  </div>
+                </div>
+              )
+            })
+          )}
         </div>
       </Card>
 
@@ -337,9 +402,8 @@ const OrderDetailPage = () => {
               <tbody>
                 {offers.map((offer) => {
                   const isSelected = selectedOfferId && offer.id === selectedOfferId;
-                  const priceLabel = `${(offer.priceValue ?? offer.basePrice ?? 0).toFixed(2)} ${
-                    offer.currencyValue ?? 'EUR'
-                  }`;
+                  const priceLabel = `${(offer.priceValue ?? offer.basePrice ?? 0).toFixed(2)} ${offer.currencyValue ?? 'EUR'
+                    }`;
                   return (
                     <tr
                       key={offer.id}
@@ -404,6 +468,22 @@ const styles: Record<string, CSSProperties> = {
     backgroundColor: '#fef2f2',
     color: '#991b1b',
     border: '1px solid #fecdd3'
+  },
+  abortedBanner: {
+    padding: 16,
+    borderRadius: 12,
+    background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(153, 27, 27, 0.4) 100%)',
+    border: '1px solid rgba(239, 68, 68, 0.5)',
+    color: '#fca5a5',
+    marginBottom: 16,
+    backdropFilter: 'blur(10px)'
+  },
+  chatContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    maxHeight: 400,
+    overflowY: 'auto',
+    padding: '4px 8px' // Scrollbar padding
   },
   emptyBox: {
     padding: 12,

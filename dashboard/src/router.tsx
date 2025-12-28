@@ -24,6 +24,10 @@ import OffersPage from './pages/OffersPage';
 import SuppliersPage from './pages/SuppliersPage';
 import WwsConnectionsPage from './pages/WwsConnectionsPage';
 import SalesTeamPage from './pages/SalesTeamPage';
+import ProductsPage from './pages/ProductsPage';
+import ProductDetailPage from './pages/ProductDetailPage';
+import SettingsPage from './pages/SettingsPage';
+import OnboardingPage from './pages/onboarding/OnboardingPage';
 
 const Providers = () => (
   <I18nProvider>
@@ -38,6 +42,7 @@ const routes = [
     element: <Providers />,
     children: [
       { path: '/auth', element: <AuthPage /> },
+      { path: '/onboarding', element: <OnboardingPage /> },
       {
         path: '/',
         element: (
@@ -57,6 +62,8 @@ const routes = [
           { path: 'orders', element: <OrdersListPage /> },
           { path: 'orders/:id', element: <OrderDetailPage /> },
           { path: 'offers', element: <OffersPage /> },
+          { path: 'products', element: <ProductsPage /> },
+          { path: 'products/:id', element: <ProductDetailPage /> },
           { path: 'suppliers', element: <SuppliersPage /> },
           { path: 'wws-connections', element: <WwsConnectionsPage /> },
           // Sales / Team
@@ -72,6 +79,7 @@ const routes = [
           { path: 'documents/transmit', element: <TransmitPage /> },
           { path: 'settings/pricing', element: <PricingPage /> },
           { path: 'settings/integrations', element: <IntegrationsPage /> },
+          { path: 'settings', element: <SettingsPage /> },
           { path: '*', element: <Navigate to='/' replace /> }
         ]
       },

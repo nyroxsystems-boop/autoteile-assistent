@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from './utils';
 
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success';
 type ButtonSize = 'sm' | 'md';
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -27,7 +27,7 @@ export const Button: React.FC<ButtonProps> = ({
         'ui-btn',
         `ui-btn-${variant}`,
         `ui-btn-${size}`,
-        { 'ui-btn-full': fullWidth },
+        { 'ui-btn-full': !!fullWidth },
         className
       )}
       {...rest}

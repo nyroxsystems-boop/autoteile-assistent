@@ -13,7 +13,9 @@ from .managers import TenantManager
 from .context import get_current_tenant
 
 
-class Tenant(models.Model):
+from django_tenants.models import TenantMixin, DomainMixin 
+
+class Tenant(TenantMixin):
     """Tenant container."""
 
     name = models.CharField(max_length=200)
@@ -23,6 +25,10 @@ class Tenant(models.Model):
     max_users = models.IntegerField(default=5, help_text=_('Maximum number of users allowed for this tenant'))
     max_devices = models.IntegerField(default=10, help_text=_('Maximum number of concurrent devices/sessions allowed for this tenant'))
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    # schema_name is added by TenantMixin
+
+    auto_create_schema = True
 
     class Meta:
         """Model metadata."""
@@ -33,6 +39,9 @@ class Tenant(models.Model):
     def __str__(self):
         """Readable name."""
         return self.name
+
+class Domain(DomainMixin):
+    pass
 
 
 class TenantUser(models.Model):

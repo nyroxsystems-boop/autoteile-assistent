@@ -33,6 +33,9 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
+        order_filter = self.request.query_params.get('order')
+        if order_filter:
+            qs = qs.filter(order_id=order_filter)
         return qs
 
     def get_serializer_context(self):

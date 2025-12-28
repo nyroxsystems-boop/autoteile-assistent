@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
+import apiClient from '../lib/apiClient';
 
 interface User {
     id: string;
@@ -39,17 +40,20 @@ const SalesTeamPage: React.FC = () => {
     const [newName, setNewName] = useState('');
     const [newEmail, setNewEmail] = useState('');
 
+
+    // ... (imports)
+
     const fetchUsers = async () => {
         try {
-            const res = await fetch('http://localhost:3000/api/admin/users');
-            if (res.ok) setUsers(await res.json());
+            const { data } = await apiClient.get('/api/admin/users');
+            if (data) setUsers(Array.isArray(data) ? data : []);
         } catch (e) { console.error(e); }
     };
 
     const fetchStats = async () => {
         try {
-            const res = await fetch('http://localhost:3000/api/admin/kpis');
-            if (res.ok) setStats(await res.json());
+            const { data } = await apiClient.get('/api/admin/kpis');
+            if (data) setStats(data as KPIStats);
         } catch (e) { console.error(e); }
     };
 
@@ -61,17 +65,11 @@ const SalesTeamPage: React.FC = () => {
     const handleAddUser = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            const res = await fetch('http://localhost:3000/api/admin/users', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: newName, email: newEmail, role: 'sales_rep' })
-            });
-            if (res.ok) {
-                setShowAddUser(false);
-                setNewName('');
-                setNewEmail('');
-                fetchUsers();
-            }
+            await apiClient.post('/api/admin/users', { name: newName, email: newEmail, role: 'sales_rep' });
+            setShowAddUser(false);
+            setNewName('');
+            setNewEmail('');
+            fetchUsers();
         } catch (e) { console.error(e); }
     };
 

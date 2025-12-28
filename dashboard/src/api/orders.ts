@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { ApiError, Order, ShopOffer } from './types';
+import type { ApiError, Order, ShopOffer, OrderMessage } from './types';
 
 const logError = (context: string, error: unknown) => {
   const apiError = error as ApiError;
@@ -77,5 +77,17 @@ export const publishOffers = async (
   } catch (error) {
     logError('publishOffers()', error);
     throw error;
+  }
+};
+
+export const getOrderMessages = async (orderId: string): Promise<OrderMessage[]> => {
+  console.log('[ordersApi] getOrderMessages() called', { orderId });
+  try {
+    const messages = await apiClient.get<OrderMessage[]>(`/api/dashboard/orders/${orderId}/messages`);
+    console.log('[ordersApi] getOrderMessages() success', { count: messages?.length ?? 0 });
+    return messages;
+  } catch (error) {
+    logError('getOrderMessages()', error);
+    return [];
   }
 };

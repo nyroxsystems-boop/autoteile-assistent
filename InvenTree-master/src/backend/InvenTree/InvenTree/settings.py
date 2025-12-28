@@ -276,24 +276,62 @@ INVENTREE_ADMIN_URL = get_setting(
     'INVENTREE_ADMIN_URL', config_key='admin_url', default_value='admin'
 )
 
-INSTALLED_APPS = [
-    # Admin site integration
+# --- django-tenants Configuration ---
+SHARED_APPS = [
+    'django_tenants',  # Mandatory first
+    'tenancy',  # Contains Tenant model
+    'users.apps.UsersConfig', # Shared Users
+    
     'django.contrib.admin',
     'django.contrib.admindocs',
-    # InvenTree apps
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'django.contrib.sites',
+    
+    'maintenance_mode',
+    'rest_framework',
+    'corsheaders',
+    'django_cleanup.apps.CleanupConfig',
+    'mptt',
+    'markdownify',
+    'djmoney',
+    'djmoney.contrib.exchange',
+    'error_report',
+    'dbbackup',
+    'django_structlog',
+    'allauth',
+    'allauth.account',
+    'allauth.headless',
+    'allauth.socialaccount',
+    'allauth.mfa',
+    'allauth.usersessions',
+    'django_otp',
+    'django_otp.plugins.otp_totp',
+    'django_otp.plugins.otp_static',
+    'oauth2_provider',
+    'drf_spectacular',
+    'django_ical',
+    'django_mailbox',
+    'anymail',
+    'storages',
+    'web',
+]
+
+TENANT_APPS = [
+    'part.apps.PartConfig',
+    'stock.apps.StockConfig',
+    'order.apps.OrderConfig',
+    'company.apps.CompanyConfig',
+    'report.apps.ReportConfig',
     'build.apps.BuildConfig',
     'common.apps.CommonConfig',
-    'plugin.apps.PluginAppConfig',  # Plugin app runs before all apps that depend on the isPluginRegistryLoaded function
-    'company.apps.CompanyConfig',
-    'order.apps.OrderConfig',
-    'part.apps.PartConfig',
-    'report.apps.ReportConfig',
-    'stock.apps.StockConfig',
-    'users.apps.UsersConfig',
+    'plugin.apps.PluginAppConfig',
     'machine.apps.MachineConfig',
     'data_exporter.apps.DataExporterConfig',
     'importer.apps.ImporterConfig',
-    'tenancy.apps.TenancyConfig',
     'channels.apps.ChannelsConfig',
     'wws.apps.WwsConfig',
     'extsync.apps.ExtsyncConfig',
@@ -301,56 +339,24 @@ INSTALLED_APPS = [
     'billing.apps.BillingConfig',
     'audit.apps.AuditConfig',
     'outbox.apps.OutboxConfig',
-    'web',
     'generic',
-    'InvenTree.apps.InvenTreeConfig',  # InvenTree app runs last
-    # Core django modules
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.humanize',
-    'whitenoise.runserver_nostatic',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'django.contrib.sites',
-    # Maintenance
-    'maintenance_mode',
-    # Third part add-ons
-    'django_filters',  # Extended filter functionality
-    'rest_framework',  # DRF (Django Rest Framework)
-    'corsheaders',  # Cross-origin Resource Sharing for DRF
-    'django_cleanup.apps.CleanupConfig',  # Automatically delete orphaned MEDIA files
-    'mptt',  # Modified Preorder Tree Traversal
-    'markdownify',  # Markdown template rendering
-    'djmoney',  # django-money integration
-    'djmoney.contrib.exchange',  # django-money exchange rates
-    'error_report',  # Error reporting in the admin interface
+    'InvenTree.apps.InvenTreeConfig',
+    'django_filters',
     'django_q',
-    'dbbackup',  # Backups - django-dbbackup
-    'taggit',  # Tagging
-    'flags',  # Flagging - django-flags
-    'django_structlog',  # Structured logging
-    'allauth',  # Base app for SSO
-    'allauth.account',  # Extend user with accounts
-    'allauth.headless',  # APIs for auth
-    'allauth.socialaccount',  # Use 'social' providers
-    'allauth.mfa',  # MFA for for allauth
-    'allauth.usersessions',  # DB sessions
-    'django_otp',  # OTP is needed for MFA - base package
-    'django_otp.plugins.otp_totp',  # Time based OTP
-    'django_otp.plugins.otp_static',  # Backup codes
-    'oauth2_provider',  # OAuth2 provider and API access
-    'drf_spectacular',  # API documentation
-    'django_ical',  # For exporting calendars
-    'django_mailbox',  # For email import
-    'anymail',  # For email sending/receiving via ESPs
-    'storages',
+    'taggit',
+    'flags',
 ]
+
+INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
+
+TENANT_MODEL = "tenancy.Tenant"
+TENANT_DOMAIN_MODEL = "tenancy.Domain"
+DATABASE_ROUTERS = ('django_tenants.routers.TenantSyncRouter',)
 
 MIDDLEWARE = CONFIG.get(
     'middleware',
     [
-        'tenancy.middleware.SubdomainTenantMiddleware',
+        'django_tenants.middleware.main.TenantMainMiddleware',
         'django.middleware.security.SecurityMiddleware',
         'whitenoise.middleware.WhiteNoiseMiddleware',
         'x_forwarded_for.middleware.XForwardedForMiddleware',
@@ -713,7 +719,10 @@ if DB_ENGINE == 'sqlite':
 
 if DB_ENGINE in ['sqlite3', 'postgresql', 'mysql']:
     # Prepend the required python module string
-    DB_ENGINE = f'django.db.backends.{DB_ENGINE}'
+    if DB_ENGINE == 'postgresql':
+        DB_ENGINE = 'django_tenants.postgresql_backend'
+    else:
+        DB_ENGINE = f'django.db.backends.{DB_ENGINE}'
     db_config['ENGINE'] = DB_ENGINE
 
 db_name = db_config['NAME']

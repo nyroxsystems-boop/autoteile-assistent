@@ -12,6 +12,7 @@ from rest_framework_simplejwt.settings import api_settings
 from .context import clear_current_tenant, set_current_tenant
 from .models import ServiceToken, Tenant, TenantUser
 from audit.utils import log_audit
+from django_tenants.utils import set_tenant
 
 logger = logging.getLogger('inventree')
 
@@ -139,9 +140,10 @@ class TenantContextMiddleware(MiddlewareMixin):
 
         if tenant:
             request.tenant = tenant
+            set_tenant(tenant)
             set_current_tenant(tenant)
         else:
-            clear_current_tenant()
+            pass
 
     def process_response(self, request, response):
         """Ensure tenant context is cleared after response."""
