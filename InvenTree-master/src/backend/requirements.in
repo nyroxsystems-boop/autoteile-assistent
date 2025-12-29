@@ -1,4 +1,5 @@
 # Please keep this list sorted - if you pin a version provide a reason
+setuptools                              # Standard dependency
 django<5.0                              # Django package
 blessed                                 # CLI for Q Monitor
 cryptography>=44.0.0                    # Core cryptographic functionality
@@ -51,7 +52,6 @@ pyyaml>=6.0.1                           # YAML parsing
 qrcode[pil]                             # QR code generator
 rapidfuzz                               # Fuzzy string matching
 sentry-sdk                              # Error reporting (optional)
-setuptools                              # Standard dependency
 tablib[xls,xlsx,yaml]                   # Support for XLS and XLSX formats
 weasyprint                              # PDF generation
 whitenoise                              # Enhanced static file serving
