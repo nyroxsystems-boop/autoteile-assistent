@@ -19,7 +19,9 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
-# Simple migrate on empty database - should apply all migrations
+# Generate fresh migrations for tenancy app (old ones deleted)
+python manage.py makemigrations tenancy --noinput
+# Then apply all migrations
 python manage.py migrate --noinput
 
 echo "==> Collecting static files..."
