@@ -19,7 +19,7 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
-python manage.py migrate --noinput
+python manage.py migrate_schemas --noinput
 
 echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
