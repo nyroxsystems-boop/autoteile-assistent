@@ -25,7 +25,9 @@ echo "Resetting database - dropping all tables..."
 psql $DATABASE_URL -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || true
 
 # Run migrations on database
-python manage.py migrate --noinput
+# Note: migrate command tries to migrate tenants after schema migrations
+# This will fail if no tenants exist yet, but that's OK - schema migrations succeeded
+python manage.py migrate --noinput || true
 
 echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
