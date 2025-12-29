@@ -19,6 +19,11 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
+# Reset migration state by dropping django_migrations table
+# This forces Django to re-run all migrations from scratch
+echo "Resetting migration state..."
+psql $DATABASE_URL -c "DROP TABLE IF EXISTS django_migrations CASCADE;" || true
+
 # Run migrations on database
 python manage.py migrate --noinput
 
