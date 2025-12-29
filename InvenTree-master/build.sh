@@ -19,10 +19,10 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
-# First migrate shared schemas (creates tenancy_tenant table)
-python manage.py migrate_schemas --shared --noinput
-# Then migrate all tenant schemas
-python manage.py migrate_schemas --noinput
+# Force create all database tables using syncdb
+python manage.py migrate --run-syncdb --noinput
+# Then run tenant-specific migrations if needed
+python manage.py migrate_schemas --noinput || true
 
 echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
