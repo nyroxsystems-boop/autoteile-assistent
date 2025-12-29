@@ -2088,4 +2088,6 @@ zopfli==0.4.0 \
 # pinned when the requirements file includes hashes and the requirement is not
 # satisfied by a package already installed. Consider using the --allow-unsafe flag.
 # setuptools
-django-tenants>=3.6.1
+django-tenants==3.9.0 \
+    --hash=sha256:14421088a4336444e2c4af54f21a6af2e57e53dcf95ba5d19b5fa17142cb460b \
+    --hash=sha256:6bc67c26be57f412e47c476261a977ef0ef74ec3740d50fd1eb6b69cb072eb03
