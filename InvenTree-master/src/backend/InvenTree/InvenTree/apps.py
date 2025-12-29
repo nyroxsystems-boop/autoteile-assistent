@@ -122,8 +122,12 @@ class InvenTreeConfig(AppConfig):
         # List of existing scheduled tasks (in the database)
         existing_tasks = {}
 
-        for existing_task in Schedule.objects.all():
-            existing_tasks[existing_task.func] = existing_task
+        try:
+            for existing_task in Schedule.objects.all():
+                existing_tasks[existing_task.func] = existing_task
+        except Exception as e:
+            logger.warning('Could not load existing tasks: %s', e)
+            # Continue anyway - tasks will be created fresh
 
         tasks_to_create = []
         tasks_to_update = []
@@ -161,12 +165,22 @@ class InvenTreeConfig(AppConfig):
                 )
 
         if len(tasks_to_create) > 0:
-            Schedule.objects.bulk_create(tasks_to_create)
-            logger.info('Created %s new scheduled tasks', len(tasks_to_create))
+            try:
+                Schedule.objects.bulk_create(tasks_to_create)
+                logger.info('Created %s new scheduled tasks', len(tasks_to_create))
+            except Exception as e:
+                logger.warning('Could not create tasks: %s', e)
 
         if len(tasks_to_update) > 0:
-            Schedule.objects.bulk_update(tasks_to_update, ['schedule_type', 'minutes'])
-            logger.info('Updated %s existing scheduled tasks', len(tasks_to_update))
+            try:
+                Schedule.objects.bulk_update(tasks_to_update, ['schedule_type', 'minutes'])
+                logger.info('Updated %s existing scheduled tasks', len(tasks_to_update))
+            except Exception as e:
+                logger.warning('Could not update tasks: %s', e)
+
+        self.add_heartbeat()
+
+        logger.info('Started %s scheduled background tasks...', len(tasks))
 
         self.add_heartbeat()
 
