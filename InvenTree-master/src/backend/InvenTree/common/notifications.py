@@ -11,11 +11,9 @@ from django.utils.translation import gettext_lazy as _
 
 import structlog
 
-import common.models
 from InvenTree.exceptions import log_error
 from InvenTree.ready import isImportingData, isRebuildingData
 from plugin import PluginMixinEnum, registry
-from users.models import Owner
 from users.permissions import check_user_permission
 
 logger = structlog.get_logger('inventree')
@@ -96,6 +94,9 @@ def trigger_notification(obj: Model, category: str = '', obj_ref: str = 'pk', **
     # Check if data is importing currently
     if isImportingData() or isRebuildingData():  # pragma: no cover
         return
+
+    import common.models
+    from users.models import Owner
 
     targets = kwargs.get('targets')
     target_fnc = kwargs.get('target_fnc')
