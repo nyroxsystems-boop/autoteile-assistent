@@ -80,6 +80,17 @@ export async function insertMessage(waId: string, content: string, direction: 'I
     return { id: msgId, ...lastSummary };
 }
 
+export async function listMessagesByOrderId(orderId: string | number): Promise<any[]> {
+    const rows = await db.all<any>(`SELECT * FROM messages WHERE order_id = ? ORDER BY created_at ASC`, [String(orderId)]);
+    return rows.map(r => ({
+        id: r.id,
+        direction: r.direction,
+        content: r.content,
+        createdAt: r.created_at,
+        isFromCustomer: r.direction === 'IN'
+    }));
+}
+
 export async function findOrCreateOrder(from: string) {
     // Find most recent active order
     const row = await db.get<any>(
@@ -308,9 +319,14 @@ export async function getSupplierById(id: string): Promise<any | null> {
     return suppliers.find(s => s.id === id) || null;
 }
 
-export async function listOffers(): Promise<any[]> {
-    // Get all offers from all orders
-    const rows = await db.all<any>(`SELECT * FROM shop_offers ORDER BY inserted_at DESC LIMIT 100`);
+export async function listOffers(orderId?: string | number): Promise<any[]> {
+    let rows;
+    if (orderId) {
+        rows = await db.all<any>(`SELECT * FROM shop_offers WHERE order_id = ? ORDER BY inserted_at DESC`, [String(orderId)]);
+    } else {
+        rows = await db.all<any>(`SELECT * FROM shop_offers ORDER BY inserted_at DESC LIMIT 100`);
+    }
+
     return rows.map(r => ({
         id: r.id,
         orderId: r.order_id,
@@ -353,4 +369,188 @@ function parseOrderRow(row: any) {
         scrapeResult: row.scrape_result ? JSON.parse(row.scrape_result) : null,
         language: data.language // Extract language from json if needed
     };
+}
+// --------------------------------------------------------------------------
+// Product Management (Local / Mock)
+// --------------------------------------------------------------------------
+
+export async function getParts(tenantId: string, params: any = {}) {
+    let sql = `SELECT * FROM parts WHERE 1=1`;
+    const queryParams: any[] = [];
+
+    if (params.search) {
+        sql += ` AND (name LIKE ? OR oem_number LIKE ? OR ipn LIKE ?)`;
+        const term = `%${params.search}%`;
+        queryParams.push(term, term, term);
+    }
+
+    if (params.category) {
+        // Simple match
+        sql += ` AND category = ?`;
+        queryParams.push(params.category);
+    }
+
+    // Sort
+    sql += ` ORDER BY name ASC LIMIT 100`;
+
+    const rows = await db.all<any>(sql, queryParams);
+    return rows.map(r => ({
+        pk: r.id,
+        name: r.name,
+        description: r.description,
+        oe_number: r.oem_number,
+        stock: r.stock,
+        category: r.category, // Just string in local DB
+        location: r.location,
+        IPN: r.ipn,
+        manufacturer: r.manufacturer,
+        active: true,
+        metadata: {}
+    }));
+}
+
+export async function getPartById(tenantId: string, partId: string | number) {
+    const row = await db.get<any>(`SELECT * FROM parts WHERE id = ?`, [String(partId)]);
+    if (!row) throw new Error("Part not found");
+    return {
+        pk: row.id,
+        name: row.name,
+        description: row.description,
+        oe_number: row.oem_number,
+        stock: row.stock,
+        category: row.category,
+        location: row.location,
+        IPN: row.ipn,
+        manufacturer: row.manufacturer,
+        active: true,
+        metadata: {}
+    };
+}
+
+export async function createPart(tenantId: string, data: any) {
+    // Insert
+    await db.run(
+        `INSERT INTO parts (name, description, oem_number, stock, category, location, ipn, manufacturer) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [data.name, data.description || '', data.oe_number || '', data.stock || 0, data.category || '', data.location || '', data.IPN || '', data.manufacturer || '']
+    );
+    // Get last inserted
+    // Since we don't have returning, we fetch by name/oem or just basic last_insert_rowid (db.run context)
+    // For simplicity, just return input with a fake ID or query last
+    const row = await db.get<any>(`SELECT * FROM parts ORDER BY id DESC LIMIT 1`);
+    return getPartById(tenantId, row.id);
+}
+
+export async function updatePart(tenantId: string, partId: string | number, patch: any) {
+    // Build update query
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    if (patch.name !== undefined) { updates.push("name = ?"); params.push(patch.name); }
+    if (patch.description !== undefined) { updates.push("description = ?"); params.push(patch.description); }
+    if (patch.stock !== undefined) { updates.push("stock = ?"); params.push(patch.stock); }
+    if (patch.location !== undefined) { updates.push("location = ?"); params.push(patch.location); }
+
+    if (updates.length > 0) {
+        const sql = `UPDATE parts SET ${updates.join(', ')} WHERE id = ?`;
+        params.push(String(partId));
+        await db.run(sql, params);
+    }
+    return getPartById(tenantId, partId);
+}
+
+export async function processStockAction(tenantId: string, partId: string | number, action: 'add' | 'remove' | 'count', quantity: number) {
+    const part = await getPartById(tenantId, partId);
+    let newStock = part.stock || 0;
+
+    if (action === 'add') newStock += quantity;
+    if (action === 'remove') newStock -= quantity;
+    if (action === 'count') newStock = quantity;
+
+    if (newStock < 0) newStock = 0; // Prevent negative
+
+    await db.run(`UPDATE parts SET stock = ? WHERE id = ?`, [newStock, String(part.pk)]);
+
+    return {
+        ...part,
+        stock: newStock
+    };
+}
+
+// --------------------------------------------------------------------------
+// CRM / Company Integration (Local SQLite)
+// --------------------------------------------------------------------------
+
+export interface InvenTreeCompany {
+    pk?: number;
+    name: string;
+    description?: string;
+    website?: string;
+    phone?: string;
+    email?: string;
+    is_customer: boolean;
+    is_supplier: boolean;
+    active: boolean;
+    currency?: string;
+    metadata?: any;
+}
+
+function parseCompanyRow(row: any) {
+    return {
+        pk: row.id,
+        name: row.name,
+        description: row.description,
+        website: row.website,
+        email: row.email,
+        phone: row.phone,
+        is_customer: !!row.is_customer,
+        is_supplier: !!row.is_supplier,
+        active: !!row.active,
+        metadata: row.metadata ? JSON.parse(row.metadata) : {}
+    };
+}
+
+export async function createCompany(company: InvenTreeCompany) {
+    await db.run(
+        `INSERT INTO companies (name, description, website, email, phone, is_customer, is_supplier, active, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [company.name, company.description || '', company.website || '', company.email || '', company.phone || '', company.is_customer ? 1 : 0, company.is_supplier ? 1 : 0, company.active ? 1 : 0, JSON.stringify(company.metadata || {})]
+    );
+    const row = await db.get<any>(`SELECT * FROM companies ORDER BY id DESC LIMIT 1`);
+    return parseCompanyRow(row);
+}
+
+export async function getCompanies(params: { is_customer?: boolean, is_supplier?: boolean, search?: string, active?: boolean } = {}) {
+    let sql = `SELECT * FROM companies WHERE 1=1`;
+    const qp: any[] = [];
+    if (params.is_customer !== undefined) { sql += ` AND is_customer = ?`; qp.push(params.is_customer ? 1 : 0); }
+    if (params.is_supplier !== undefined) { sql += ` AND is_supplier = ?`; qp.push(params.is_supplier ? 1 : 0); }
+    if (params.active !== undefined) { sql += ` AND active = ?`; qp.push(params.active ? 1 : 0); }
+    if (params.search) { sql += ` AND name LIKE ?`; qp.push(`%${params.search}%`); }
+
+    // Sort
+    sql += ` ORDER BY id DESC LIMIT 100`;
+
+    const rows = await db.all<any>(sql, qp);
+    return rows.map(parseCompanyRow);
+}
+
+export async function updateCompany(id: number, patch: Partial<InvenTreeCompany>) {
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    if (patch.name !== undefined) { updates.push("name = ?"); params.push(patch.name); }
+    if (patch.description !== undefined) { updates.push("description = ?"); params.push(patch.description); }
+    if (patch.website !== undefined) { updates.push("website = ?"); params.push(patch.website); }
+    if (patch.email !== undefined) { updates.push("email = ?"); params.push(patch.email); }
+    if (patch.phone !== undefined) { updates.push("phone = ?"); params.push(patch.phone); }
+    if (patch.is_customer !== undefined) { updates.push("is_customer = ?"); params.push(patch.is_customer ? 1 : 0); }
+    if (patch.metadata !== undefined) { updates.push("metadata = ?"); params.push(JSON.stringify(patch.metadata)); }
+
+    if (updates.length > 0) {
+        const sql = `UPDATE companies SET ${updates.join(', ')} WHERE id = ?`;
+        params.push(String(id));
+        await db.run(sql, params);
+    }
+    const row = await db.get<any>(`SELECT * FROM companies WHERE id = ?`, [id]);
+    if (!row) throw new Error("Company not found");
+    return parseCompanyRow(row);
 }

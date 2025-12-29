@@ -1,43 +1,78 @@
 /// <reference types="vite/client" />
 import { apiFetch } from './client';
 
+// Aligned with bot-service/src/types/dashboard.ts
+
 export interface Order {
-    id: number;
-    external_ref: string;
-    status: string;
-    language?: string;
-    order_data: any;
-    vehicle_json: any;
-    part_json: any;
-    contact?: {
-        id: number;
-        name: string;
-        wa_id?: string;
-    };
-    oem: string;
-    notes: string;
-    total_price: string;
-    currency: string;
+    id: string; // UUID
+    status: string; // 'new' | 'in_progress' | 'done'
+    language?: string | null;
     created_at: string;
     updated_at: string;
+    createdAt?: string;
+    updatedAt?: string;
+    customerId?: string | null;
+    customerPhone?: string | null;
+
+    // Vehicle Data
+    vehicle?: {
+        vin?: string | null;
+        hsn?: string | null;
+        tsn?: string | null;
+        make?: string | null;
+        model?: string | null;
+        year?: number | null;
+        engine?: string | null;
+    } | null;
+
+    // Part Data
+    part?: {
+        partCategory?: string | null;
+        position?: string | null;
+        partText?: string | null;
+        partDetails?: Record<string, any> | null;
+        oemStatus?: "pending" | "success" | "not_found" | "multiple_matches" | null;
+        oemNumber?: string | null;
+    } | null;
+
+    oem_number?: string | null;
+
+    // Legacy support (optional)
+    external_ref?: string;
+    order_data?: any;
+    contact?: { name: string; wa_id?: string };
+
+    // Aliases found in legacy code
+    vehicle_json?: any; // To allow legacy code to compile, though undefined
+    part_json?: any;
+    oem?: string;
 }
 
 export interface Offer {
-    id: number;
-    orderId: number;
-    supplier?: number;
-    supplierName?: string;
-    price: string;
-    currency: string;
-    availability: string;
-    delivery_days: number;
-    deliveryTimeDays?: number;
-    sku: string;
-    product_name: string;
+    id: string;
+    orderId: string;
+    shopName?: string; // e.g. "Autodoc"
+    supplierName?: string; // Compatibility
+
+    // Product Info
     brand: string;
-    product_url: string;
-    status: 'draft' | 'published';
-    meta_json: any;
+    productName: string;
+    oemNumber?: string | null;
+    sku?: string; // Optional if scraping gives it
+
+    // Pricing
+    basePrice: number;
+    currency?: string;
+    deliveryTimeDays?: number;
+
+    // Meta
+    status: string; // 'draft' | 'published'
+    tier?: string | null;
+    meta_json?: any;
+
+    // Frontend helpers
+    product_name?: string; // Alias
+    price?: string; // Alias for display
 }
 
 export interface Invoice {
@@ -103,6 +138,14 @@ export interface MerchantSettings {
     priceProfiles: any[];
 }
 
+export interface Message {
+    id: string;
+    direction: 'IN' | 'OUT';
+    content: string;
+    createdAt: string;
+    isFromCustomer: boolean;
+}
+
 export interface AdminStats {
     total_tenants: number;
     total_users: number;
@@ -132,11 +175,29 @@ export async function getOrders(): Promise<Order[]> {
     return apiFetch<Order[]>('/api/dashboard/orders');
 }
 
-export async function getOrderOffers(orderId: number): Promise<Offer[]> {
+export async function getOrderMessages(orderId: string | number): Promise<Message[]> {
+    return apiFetch<Message[]>(`/api/dashboard/orders/${orderId}/messages`);
+}
+
+export async function sendMessage(orderId: string | number, content: string): Promise<Message> {
+    return apiFetch<Message>(`/api/dashboard/orders/${orderId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content })
+    });
+}
+
+export async function getOrderOffers(orderId: string | number): Promise<Offer[]> {
     return apiFetch<Offer[]>(`/api/offers?orderId=${orderId}`);
 }
 
-export async function publishOffers(orderId: number, offerIds: number[]): Promise<{ success: boolean }> {
+export async function createOffer(orderId: string | number, offerData: any): Promise<Offer> {
+    return apiFetch<Offer>(`/api/dashboard/orders/${orderId}/offers`, {
+        method: 'POST',
+        body: JSON.stringify(offerData)
+    });
+}
+
+export async function publishOffers(orderId: string | number, offerIds: number[]): Promise<{ success: boolean }> {
     return apiFetch<{ success: boolean }>(`/api/dashboard/orders/${orderId}/offers/publish`, {
         method: 'POST',
         body: JSON.stringify({ offerIds }),

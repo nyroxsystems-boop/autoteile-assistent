@@ -10,9 +10,13 @@
     "types": [
       "node",
       "express",
-      "jest",
       "cors",
-      "sqlite3"
+      "node-fetch",
+      "sqlite3",
+      "cheerio",
+      "supertest",
+      "user-agents",
+      "jest"
     ]
   },
   "include": [

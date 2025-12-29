@@ -76,6 +76,29 @@ function createTables(): Promise<void> {
             expires_at TEXT,
             created_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS parts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            description TEXT,
+            oem_number TEXT,
+            stock INTEGER DEFAULT 0,
+            category TEXT,
+            location TEXT,
+            ipn TEXT,
+            manufacturer TEXT
+        )`,
+        `CREATE TABLE IF NOT EXISTS companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            description TEXT,
+            website TEXT,
+            email TEXT,
+            phone TEXT,
+            is_customer INTEGER DEFAULT 0,
+            is_supplier INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            metadata TEXT
         )`
     ];
 
