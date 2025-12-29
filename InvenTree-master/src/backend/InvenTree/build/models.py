@@ -1,4 +1,6 @@
-from __future__ import annotations"""Build database model definitions."""
+from __future__ import annotations
+
+"""Build database model definitions."""
 
 import decimal
 from typing import Optional
