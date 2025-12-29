@@ -65,7 +65,7 @@ class BuildReportContext(report.mixins.BaseReportContext):
         title: The title field of the BuildOrder
     """
 
-    bom_items: report.mixins.QuerySet[part.models.BomItem]
+    bom_items: report.mixins.QuerySet['part.BomItem']
     build: 'Build'
     build_outputs: report.mixins.QuerySet[stock.models.StockItem]
     line_items: report.mixins.QuerySet['BuildLine']
@@ -1600,7 +1600,7 @@ class BuildLineReportContext(report.mixins.BaseReportContext):
 
     allocated_quantity: decimal.Decimal
     allocations: report.mixins.QuerySet['BuildItem']
-    bom_item: part.models.BomItem
+    bom_item: 'part.BomItem'
     build: Build
     build_line: 'BuildLine'
     part: part.models.Part
@@ -1655,7 +1655,7 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
     )
 
     bom_item = models.ForeignKey(
-        part.models.BomItem, on_delete=models.CASCADE, related_name='build_lines'
+        'part.BomItem', on_delete=models.CASCADE, related_name='build_lines'
     )
 
     quantity = models.DecimalField(
