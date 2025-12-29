@@ -1,7 +1,9 @@
 """Order model definitions."""
 
+from __future__ import annotations
+
 from decimal import Decimal
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -28,7 +30,6 @@ import InvenTree.tasks
 import InvenTree.validators
 import order.validators
 import report.mixins
-import stock.models
 import users.models as UserModels
 from build.status_codes import BuildStatus
 from common.currency import currency_code_default
@@ -58,6 +59,9 @@ from order.status_codes import (
 from part import models as PartModels
 from plugin.events import trigger_event
 from stock.status_codes import StockHistoryCode, StockStatus
+
+if TYPE_CHECKING:
+    import stock.models
 
 logger = structlog.get_logger('inventree')
 
@@ -958,6 +962,8 @@ class PurchaseOrder(TotalPriceMixin, Order):
             raise ValidationError(
                 "Lines can only be received against an order marked as 'PLACED'"
             )
+
+        import stock.models
 
         # List of stock items which have been created
         stock_items: list[stock.models.StockItem] = []
@@ -2510,6 +2516,8 @@ class SalesOrderAllocation(models.Model):
         - Allocation quantity must be "1" if the StockItem is serialized
         - Allocation quantity cannot be zero
         """
+        import stock.models
+
         super().clean()
 
         errors = {}
@@ -3002,7 +3010,7 @@ class ReturnOrderLineItem(StatusCodeMixin, OrderLineItem):
     )
 
     item = models.ForeignKey(
-        stock.models.StockItem,
+        'stock.StockItem',
         on_delete=models.CASCADE,
         related_name='return_order_lines',
         verbose_name=_('Item'),
