@@ -19,6 +19,11 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
+# ONE-TIME: Reset database after previous drop corrupted state
+# REMOVE THIS BLOCK AFTER SUCCESSFUL DEPLOYMENT
+echo "Resetting database - dropping all tables..."
+psql $DATABASE_URL -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || true
+
 # Run migrations on database
 # Note: migrate command tries to migrate tenants after schema migrations
 # This will fail if no tenants exist yet, but that's OK - schema migrations succeeded
