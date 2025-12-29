@@ -19,10 +19,8 @@ pip install psycopg2-binary dj-database-url django-money django-tenants==3.7.0
 
 echo "==> Running migrations..."
 cd InvenTree
-# Generate any missing migrations (for django_tenants and tenancy)
-python manage.py makemigrations --noinput || true
-# Then migrate all
-python manage.py migrate --run-syncdb --noinput
+# Simple migrate on empty database - should apply all migrations
+python manage.py migrate --noinput
 
 echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
