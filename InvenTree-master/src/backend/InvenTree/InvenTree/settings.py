@@ -276,9 +276,9 @@ INVENTREE_ADMIN_URL = get_setting(
     'INVENTREE_ADMIN_URL', config_key='admin_url', default_value='admin'
 )
 
-# --- django-tenants Configuration ---
+# --- Multi-tenancy Configuration (django-tenants removed) ---
 SHARED_APPS = [
-    'django_tenants',  # Mandatory first
+    # 'django_tenants' removed - not compatible with runtime
     'tenancy',  # Contains Tenant model
     'users.apps.UsersConfig', # Shared Users
     
@@ -351,12 +351,12 @@ INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in S
 
 TENANT_MODEL = "tenancy.Tenant"
 TENANT_DOMAIN_MODEL = "tenancy.Domain"
-DATABASE_ROUTERS = ('django_tenants.routers.TenantSyncRouter',)
+# DATABASE_ROUTERS = ('django_tenants.routers.TenantSyncRouter',)  # Removed
 
 MIDDLEWARE = CONFIG.get(
     'middleware',
     [
-        'django_tenants.middleware.main.TenantMainMiddleware',
+        # 'django_tenants.middleware.main.TenantMainMiddleware',  # Removed
         'django.middleware.security.SecurityMiddleware',
         'whitenoise.middleware.WhiteNoiseMiddleware',
         'x_forwarded_for.middleware.XForwardedForMiddleware',
@@ -720,7 +720,7 @@ if DB_ENGINE == 'sqlite':
 if DB_ENGINE in ['sqlite3', 'postgresql', 'mysql']:
     # Prepend the required python module string
     if DB_ENGINE == 'postgresql':
-        DB_ENGINE = 'django_tenants.postgresql_backend'
+        DB_ENGINE = 'django.db.backends.postgresql'  # Standard backend
     else:
         DB_ENGINE = f'django.db.backends.{DB_ENGINE}'
     db_config['ENGINE'] = DB_ENGINE
