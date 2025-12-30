@@ -12,8 +12,8 @@ if 'DATABASE_URL' in os.environ:
         conn_max_age=600,
         ssl_require='render' in os.environ.get('RENDER_EXTERNAL_HOSTNAME', '') # SSL usually required on Render
     )
-    # CRITICAL: Override ENGINE to use django-tenants backend for multi-tenancy
-    DATABASES['default']['ENGINE'] = 'django_tenants.postgresql_backend'
+    # Use standard PostgreSQL backend (django-tenants removed)
+    DATABASES['default']['ENGINE'] = 'django.db.backends.postgresql'
     print(f"DATABASE ENGINE: {DATABASES['default']['ENGINE']}")
 else:
     print("WARNING: No DATABASE_URL found. Using default settings from settings.py")
