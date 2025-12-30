@@ -13,11 +13,14 @@ from .managers import TenantManager
 from .context import get_current_tenant
 
 
-from django_tenants.models import TenantMixin, DomainMixin 
+# from django_tenants.models import TenantMixin, DomainMixin  # Removed
 
-class Tenant(TenantMixin):
-    """Tenant container."""
+class Tenant(models.Model):
+    """Tenant container - simplified without django-tenants."""
 
+    # Field from TenantMixin (manually added)
+    schema_name = models.CharField(max_length=63, unique=True, db_index=True)
+    
     name = models.CharField(max_length=200)
     slug = models.SlugField(unique=True)
     status = models.CharField(max_length=20, default='active')
@@ -25,10 +28,6 @@ class Tenant(TenantMixin):
     max_users = models.IntegerField(default=5, help_text=_('Maximum number of users allowed for this tenant'))
     max_devices = models.IntegerField(default=10, help_text=_('Maximum number of concurrent devices/sessions allowed for this tenant'))
     created_at = models.DateTimeField(auto_now_add=True)
-    
-    # schema_name is added by TenantMixin
-
-    auto_create_schema = True
 
     class Meta:
         """Model metadata."""
@@ -40,8 +39,19 @@ class Tenant(TenantMixin):
         """Readable name."""
         return self.name
 
-class Domain(DomainMixin):
-    pass
+class Domain(models.Model):
+    """Domain model - simplified without django-tenants."""
+    
+    domain = models.CharField(max_length=253, unique=True, db_index=True)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='domains')
+    is_primary = models.BooleanField(default=True)
+    
+    class Meta:
+        verbose_name = _('Domain')
+        verbose_name_plural = _('Domains')
+    
+    def __str__(self):
+        return self.domain
 
 
 class TenantUser(models.Model):
